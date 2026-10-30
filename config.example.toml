@@ -42,13 +42,13 @@ browser_steps = false
 # qwen3-asr-gpu (Qwen3-ASR-1.7B on your GPU) is the most accurate English option, and the one that gets
 # names right: in testing 5.8% word errors on Indian English, and every rare term right when they are
 # listed in keyterms below. It needs an AMD gfx1151 (Ryzen AI Max) or NVIDIA GPU and about 10 GB of
-# download and disk, and takes about 0.44 s per command against Parakeet's 0.07 s. It runs as its own
+# download and disk, and takes about 0.65 s per command against Parakeet's 0.07 s. It runs as its own
 # service (voice-instinct-qwen); the installer checks the GPU and the disk first.
 engine = "nemotron"
 # keyterms = ["Priya", "Swiggy"]  # qwen3-asr-gpu only: names and words to hear right (the assistant's name is always in)
 # language = "en"  # English only for now; it also writes Hinglish in Roman letters (Hindi mode gave garbage)
 
 [voice]
-# Only your voice wakes it, after `cd backend && uv run enroll.py` (needs engine = "parakeet" or a whisper engine). Lower this
+# Only your voice wakes it, after `cd backend && uv run enroll.py` (needs engine = "parakeet", a whisper engine or "qwen3-asr-gpu"). Lower this
 # if it misses you, raise it if others get through.
 # threshold = 0.6

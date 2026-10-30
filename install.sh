@@ -159,7 +159,8 @@ qwen_setup() {
   fi
   if [ -x "$QWEN_DIR/venv/bin/python" ] && [ -f "$QWEN_MODEL/config.json" ]; then return; fi
   [ -e "$d" ] || d="$HOME_DIR"
-  free="${VI_FREE_GB:-$(df -Pk "$d" | awk 'NR==2 {print int($4 / 1048576)}')}"  # tests override
+  free="${VI_FREE_GB:-$(df -Pk "$d" 2>/dev/null | awk 'NR==2 {print int($4 / 1048576)}' || true)}"  # tests override
+  case "$free" in ''|*[!0-9]*) echo "qwen3-asr-gpu: could not read the free disk space under $d (got '$free'); it needs at least 12 GB." >&2; exit 1 ;; esac
   if [ "$free" -lt 12 ]; then
     echo "qwen3-asr-gpu needs at least 12 GB free under $HOME_DIR/.voice-instinct (about 10 GB of PyTorch and model); $free GB is free." >&2; exit 1
   fi
@@ -178,7 +179,8 @@ qwen_install() {
     || { echo "The Qwen engine's PyTorch cannot use the GPU (see above). Pick another [stt] engine in config.toml." >&2; exit 1; }
   if [ -f "$QWEN_MODEL/config.json" ]; then say "keep speech model Qwen3-ASR-1.7B-hf"; return; fi
   # into .part, renamed when complete: a re-run resumes, and the model dir only exists once it is whole
-  run "$py" -c "from huggingface_hub import snapshot_download; snapshot_download('Qwen/Qwen3-ASR-1.7B-hf', revision='$QWEN_REV', local_dir='$QWEN_MODEL.part')"
+  run "$py" -c "import sys; from huggingface_hub import snapshot_download; snapshot_download('Qwen/Qwen3-ASR-1.7B-hf', revision=sys.argv[1], local_dir=sys.argv[2])" "$QWEN_REV" "$QWEN_MODEL.part"
+  run rm -rf "$QWEN_MODEL"  # a leftover dir without config.json would swallow the mv
   run mv "$QWEN_MODEL.part" "$QWEN_MODEL"
 }
 
@@ -219,11 +221,11 @@ sway_rule() {
 services() {
   local uvbin="$UV" CLAUDE_BIN
   CLAUDE_BIN="$(command -v claude || true)"  # the service's PATH may not reach it (npm-global, nvm)
+  local qwen_deps=""  # the backend unit waits for the Qwen service; other engines' units stay as they were
+  [ -n "$QWEN" ] && qwen_deps=$'\nWants=voice-instinct-qwen.service\nAfter=voice-instinct-qwen.service'
   write "$UNIT" 644 <<EOF
 [Unit]
-Description=voice-instinct backend
-${QWEN:+Wants=voice-instinct-qwen.service}
-${QWEN:+After=voice-instinct-qwen.service}
+Description=voice-instinct backend${qwen_deps}
 
 [Service]
 WorkingDirectory=$REPO/backend
@@ -297,13 +299,14 @@ Exec=$LAUNCHER
 X-GNOME-Autostart-enabled=true
 EOF
   if [ "$DRY" = 1 ] || systemctl --user show-environment >/dev/null 2>&1; then
+    if [ -z "$QWEN" ] && [ -f "$QWEN_UNIT" ]; then  # switched away from qwen3-asr-gpu; removed before the reload
+      run systemctl --user disable --now voice-instinct-qwen.service
+      run rm -f "$QWEN_UNIT"
+    fi
     run systemctl --user daemon-reload
     if [ -n "$QWEN" ]; then
       run systemctl --user enable voice-instinct-qwen.service
       run systemctl --user restart voice-instinct-qwen.service  # about a minute of warm-up before it answers
-    elif [ -f "$QWEN_UNIT" ]; then  # switched away from qwen3-asr-gpu
-      run systemctl --user disable --now voice-instinct-qwen.service
-      run rm -f "$QWEN_UNIT"
     fi
     run systemctl --user enable voice-instinct.service
     run systemctl --user restart voice-instinct.service  # re-run = update: pick up new code
@@ -348,8 +351,8 @@ command -v uv >/dev/null || run sh -c "curl -LsSf https://astral.sh/uv/install.s
 UV="$(command -v uv || echo "$HOME_DIR/.local/bin/uv")"  # the fresh install is not on PATH yet
 models
 if [ -n "$QWEN" ]; then qwen_install
-elif [ -d "$QWEN_DIR" ] || [ -d "$QWEN_MODEL" ]; then
-  say "The Qwen GPU engine is no longer used; to free about 10 GB: rm -rf $QWEN_DIR $QWEN_MODEL"
+elif [ -d "$QWEN_DIR" ] || [ -d "$QWEN_MODEL" ] || [ -d "$QWEN_MODEL.part" ]; then
+  say "The Qwen GPU engine is no longer used; to free about 10 GB: rm -rf $QWEN_DIR $QWEN_MODEL $QWEN_MODEL.part"
 fi
 config_and_key
 run sh -c "cd '$REPO/backend' && $UV sync --python 3.13"

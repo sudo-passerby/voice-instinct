@@ -61,7 +61,7 @@ def test_qwen_hears_every_rare_term_far_field_quickly(tmp_path):
         heard = asyncio.run(transcribe(pcm))
         times.append(time.monotonic() - t)
         print(f"{times[-1]:.3f}s {line!r} -> {heard!r}")
-        for term in (t for t in TERMS if t in line):
+        for term in (term for term in TERMS if term in line):
             mentions += 1
             if term.lower() not in heard.lower():
                 misses.append((term, heard))

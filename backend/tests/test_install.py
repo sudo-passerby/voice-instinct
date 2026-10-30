@@ -279,8 +279,10 @@ def test_electron_sandbox_helper_is_set_up_where_user_namespaces_are_restricted(
 def render_unit(tmp_path, claude_bin, qwen=""):
     src = SCRIPT.read_text()
     body = src.split('write "$UNIT" 644 <<EOF\n', 1)[1].split("\nEOF\n", 1)[0]
+    deps = next(l.strip() for l in src.splitlines() if l.strip().startswith('[ -n "$QWEN" ] && qwen_deps='))
     script = tmp_path / "render.sh"
-    script.write_text(f'REPO=/r; uvbin=/u; HOME_DIR=/h; CLAUDE_BIN="{claude_bin}"; QWEN="{qwen}"\ncat <<EOF\n{body}\nEOF\n')
+    script.write_text(f'REPO=/r; uvbin=/u; HOME_DIR=/h; CLAUDE_BIN="{claude_bin}"; QWEN="{qwen}"; qwen_deps=""\n{deps}\n'
+                      f'cat <<EOF\n{body}\nEOF\n')
     return subprocess.run(["bash", str(script)], capture_output=True, text=True, check=True).stdout
 
 
@@ -443,7 +445,8 @@ def test_qwen_on_gfx1151_uses_amds_index(tmp_path):
     for s in ("rocm.nightlies.amd.com/v2/gfx1151/", "torch==2.10.0+rocm7.13.0a20260513",
               "torchaudio==2.10.0+rocm7.13.0a20260513", "transformers==5.22.1", "uv venv -p 3.12"):
         assert s in r.stdout, s
-    assert "revision='bcd2b5b7f32b480ab5790554cfa8347f246a14f3'" in r.stdout
+    dl = next(l for l in r.stdout.splitlines() if "snapshot_download" in l)
+    assert dl.endswith(" bcd2b5b7f32b480ab5790554cfa8347f246a14f3 " + str(tmp_path / "home/.voice-instinct/models/Qwen3-ASR-1.7B-hf.part"))
 
 
 def test_qwen_on_nvidia_uses_pypi_torch(tmp_path):
@@ -454,13 +457,24 @@ def test_qwen_on_nvidia_uses_pypi_torch(tmp_path):
     assert "--index-url" not in torch
 
 
+def no_nvidia():
+    """PATH without any real nvidia-smi, so "no GPU" holds on any test machine."""
+    return {"PATH": ":".join(d for d in os.environ["PATH"].split(":") if not os.path.exists(os.path.join(d, "nvidia-smi")))}
+
+
 def test_qwen_with_no_supported_gpu_stops_before_any_package_step(tmp_path):
-    r = run_with_engine(tmp_path, "qwen3-asr-gpu")
+    r = run_with_engine(tmp_path, "qwen3-asr-gpu", env=no_nvidia())
     assert r.returncode != 0 and "needs a supported GPU" in r.stderr
     assert "pacman" not in r.stdout and "would run" not in r.stdout
-    r = run_with_engine(tmp_path / "other", "qwen3-asr-gpu", kfd=110001)
+    r = run_with_engine(tmp_path / "other", "qwen3-asr-gpu", kfd=110001, env=no_nvidia())
     assert r.returncode != 0 and "not supported yet" in r.stderr and "gfx1101" in r.stderr
     assert "pacman" not in r.stdout
+
+
+def test_an_unsupported_amd_gpu_beside_an_nvidia_one_uses_pypi_torch(tmp_path):
+    r = run_with_engine(tmp_path, "qwen3-asr-gpu", kfd=110001, env=fake_nvidia(tmp_path))
+    assert r.returncode == 0, r.stderr
+    assert "rocm.nightlies" not in r.stdout and "torch==2.10.0 torchaudio==2.10.0" in r.stdout
 
 
 def test_qwen_install_stops_when_the_disk_is_nearly_full(tmp_path):
@@ -508,7 +522,7 @@ def test_qwen_service_is_written_and_the_backend_waits_for_it(tmp_path):
     assert "Restart=on-failure" in body and "WantedBy=default.target" in body
     unit = render_unit(tmp_path, "", qwen="1")
     assert f"Wants={QWEN_UNIT}" in unit and f"After={QWEN_UNIT}" in unit
-    assert QWEN_UNIT not in render_unit(tmp_path, "")
+    assert "Description=voice-instinct backend\n\n[Service]" in render_unit(tmp_path, "")  # as before this engine
     p = run_with_engine(tmp_path / "p", "parakeet")
     assert p.returncode == 0, p.stderr
     assert QWEN_UNIT not in p.stdout
@@ -521,7 +535,10 @@ def test_switching_away_disables_the_qwen_service(tmp_path):
     (tmp_path / "home/.voice-instinct/qwen-asr").mkdir(parents=True)
     r = run_with_engine(tmp_path, "parakeet")
     assert r.returncode == 0, r.stderr
-    assert f"disable --now {QWEN_UNIT}" in r.stdout
+    lines = r.stdout.splitlines()
+    rm = next(i for i, l in enumerate(lines) if l.startswith("would run: rm -f") and QWEN_UNIT in l)
+    assert f"disable --now {QWEN_UNIT}" in lines[rm - 1]
+    assert rm < lines.index("would run: systemctl --user daemon-reload")  # the reload forgets the removed unit
     assert "about 10 GB" in r.stdout and "qwen-asr" in r.stdout
 
 
