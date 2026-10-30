@@ -39,7 +39,13 @@ browser_steps = false
 # base 198 MB, small 610 MB (about 290 ms per phrase, no better than base in testing).
 # Re-run ./install.sh after changing it: it downloads only the engine chosen here (Nemotron is
 # about 450 MB). Nemotron's weights are under the NVIDIA Open Model License.
+# qwen3-asr-gpu (Qwen3-ASR-1.7B on your GPU) is the most accurate English option, and the one that gets
+# names right: in testing 5.8% word errors on Indian English, and every rare term right when they are
+# listed in keyterms below. It needs an AMD gfx1151 (Ryzen AI Max) or NVIDIA GPU and about 10 GB of
+# download and disk, and takes about 0.44 s per command against Parakeet's 0.07 s. It runs as its own
+# service (voice-instinct-qwen); the installer checks the GPU and the disk first.
 engine = "nemotron"
+# keyterms = ["Priya", "Swiggy"]  # qwen3-asr-gpu only: names and words to hear right (the assistant's name is always in)
 # language = "en"  # English only for now; it also writes Hinglish in Roman letters (Hindi mode gave garbage)
 
 [voice]

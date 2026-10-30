@@ -12,6 +12,7 @@ Not affiliated with Instinct.
   and speaks, then hides again.
 - You just talk to it. Speech-to-text (Nemotron streaming, Parakeet or Whisper) and text-to-speech (Kokoro) run locally,
   around a model of your choice: Gemini by default, or any OpenAI-compatible endpoint or Ollama.
+- Optional, with a supported GPU: `qwen3-asr-gpu` (Qwen3-ASR-1.7B) is the most accurate English speech-to-text and gets names you list right, at about 10 GB and 0.44 s per command (see `[stt]` in `config.example.toml`).
 - It hands errands to your own logged-in `claude` CLI as a tracked background task, runs it
   autonomously in a sandbox, and tells you the result.
 - When the task needs a go-ahead or an answer, it asks you aloud and carries on in the same run.
