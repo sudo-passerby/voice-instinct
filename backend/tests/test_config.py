@@ -137,7 +137,7 @@ def test_every_stt_engine_is_accepted_from_its_section(tmp_path):
 def test_an_unknown_stt_engine_is_refused_with_the_choices(tmp_path):
     p = tmp_path / "c.toml"
     p.write_text('[stt]\nengine = "whisper-large"\n')
-    with pytest.raises(ValueError, match=r"\[stt\] engine must be one of nemotron, nemotron-multilingual, parakeet, whisper-tiny, whisper-base, whisper-small"):
+    with pytest.raises(ValueError, match=r"\[stt\] engine must be one of nemotron, nemotron-multilingual, parakeet, whisper-tiny, whisper-base, whisper-small, qwen3-asr-gpu"):
         load(p)
 
 
@@ -175,7 +175,7 @@ def test_whisper_also_wakes_on_the_name_split_in_two():
 
 def test_only_segmented_engines_check_the_voice():
     from config import checks_voice
-    assert checks_voice("parakeet") and checks_voice("whisper-small")
+    assert checks_voice("parakeet") and checks_voice("whisper-small") and checks_voice("qwen3-asr-gpu")
     assert not checks_voice("nemotron") and not checks_voice("nemotron-multilingual")
 
 
@@ -189,3 +189,24 @@ def test_voice_threshold_defaults_and_is_validated(tmp_path):
         p.write_text(f"[voice]\nthreshold = {bad}\n")
         with pytest.raises(ValueError, match="threshold"):
             load(p)
+
+
+def test_keyterms_always_start_with_the_assistant_name_and_dedupe(tmp_path):
+    p = tmp_path / "c.toml"
+    p.write_text('[assistant]\nname = "Nova"\n[stt]\nengine = "qwen3-asr-gpu"\nkeyterms = ["Priya", "nova", "Swiggy", "priya"]\n')
+    assert load(p).keyterms == ["Nova", "Priya", "Swiggy"]
+    p.write_text('[stt]\nengine = "qwen3-asr-gpu"\n')
+    assert load(p).keyterms == ["Nova"]
+
+
+def test_keyterms_must_be_a_short_list_of_short_strings(tmp_path):
+    p = tmp_path / "c.toml"
+    for bad in ('"Priya"', '[""]', '[5]', '["' + "x" * 41 + '"]', "[" + ", ".join(['"t"'] * 51) + "]"):
+        p.write_text(f"[stt]\nkeyterms = {bad}\n")
+        with pytest.raises(ValueError, match=r"\[stt\] keyterms must be a list of up to 50 words or short phrases"):
+            load(p)
+
+
+def test_the_qwen_port_is_fixed():
+    from config import QWEN_ASR_PORT
+    assert QWEN_ASR_PORT == 7861

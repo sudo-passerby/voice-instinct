@@ -1,13 +1,14 @@
 """Settings for both halves, read from config.toml at the repo root (sectioned; flat keys still work)."""
 
 import tomllib
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 POSITIONS = ("bottom-right", "bottom-left", "top-right", "top-left", "center")
 STT_ENGINES = ("nemotron", "nemotron-multilingual", "parakeet",
-               "whisper-tiny", "whisper-base", "whisper-small")  # services.make_stt; install.sh's table
+               "whisper-tiny", "whisper-base", "whisper-small", "qwen3-asr-gpu")  # services.make_stt; install.sh's table
+QWEN_ASR_PORT = 7861  # the local Qwen3-ASR server (own venv, Python 3.12, imports this); keep config.py stdlib-only
 # Whisper's language, for now English only. English mode also covers Hinglish (written in Roman letters) and
 # translates plain Hindi; Hindi mode ("hi") gave garbage in these int8 builds (tested 2026-10-16). A code sherpa-onnx
 # doesn't know makes it exit the whole process on the first utterance, so load() refuses anything else.
@@ -20,7 +21,7 @@ def is_whisper(engine: str) -> bool:
 
 def checks_voice(engine: str) -> bool:
     """Engines that hand over a finished segment the owner's voice can be checked on (nemotron streams)."""
-    return engine == "parakeet" or is_whisper(engine)
+    return engine in ("parakeet", "qwen3-asr-gpu") or is_whisper(engine)
 
 
 # config.toml section -> {key in file: Config field}
@@ -33,7 +34,7 @@ _SECTIONS = {
     "agent": {"permission_mode": "permission_mode", "backend_timeout": "backend_timeout",
               "permission_timeout": "permission_timeout"},
     "debug": {"browser_steps": "debug_browser_steps"},
-    "stt": {"engine": "stt_engine", "language": "stt_language"},
+    "stt": {"engine": "stt_engine", "language": "stt_language", "keyterms": "stt_keyterms"},
     "voice": {"threshold": "voice_threshold"},
 }
 
@@ -58,7 +59,18 @@ class Config:
     debug_browser_steps: bool = False  # screenshot every errand browser step (steps.py)
     stt_engine: str = "nemotron"  # speech-to-text engine (services.make_stt); install.sh downloads only this one
     stt_language: str = "en"  # Whisper's language code ([stt] language)
+    stt_keyterms: list[str] = field(default_factory=list)  # [stt] keyterms: names/words to bias recognition toward
     voice_threshold: float = 0.6  # owner-voice cut-off (voiceprint.py); spike 2 (#32): EER 0 to 5% at 0.60
+
+    @property
+    def keyterms(self) -> list[str]:
+        """The assistant's name first, then [stt] keyterms, without repeats (case-insensitive)."""
+        seen, out = set(), []
+        for t in [self.name, *self.stt_keyterms]:
+            if t.lower() not in seen:
+                seen.add(t.lower())
+                out.append(t)
+        return out
 
     @property
     def wake_phrases(self) -> list[str]:
@@ -102,6 +114,10 @@ def load(path=None) -> Config:
         raise ValueError(f"config.toml: [stt] engine must be one of {', '.join(STT_ENGINES)}")
     if cfg.stt_language not in WHISPER_LANGUAGES:  # never a string Whisper would choke on mid-session
         raise ValueError('config.toml: [stt] language must be "en" for now (it also covers Hinglish)')
+    k = cfg.stt_keyterms
+    if not isinstance(k, list) or len(k) > 50 or not all(isinstance(x, str) and 0 < len(x.strip()) <= 40 for x in k):
+        raise ValueError("config.toml: [stt] keyterms must be a list of up to 50 words or short phrases")
+    cfg.stt_keyterms = [x.strip() for x in k]
     t = cfg.voice_threshold
     if isinstance(t, bool) or not isinstance(t, (int, float)) or not 0 <= t <= 1:
         raise ValueError("config.toml: [voice] threshold must be a number from 0 to 1")
