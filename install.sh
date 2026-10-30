@@ -269,6 +269,8 @@ EOF
     write "$QWEN_UNIT" 644 <<EOF
 [Unit]
 Description=voice-instinct speech-to-text on the GPU (Qwen3-ASR-1.7B, 127.0.0.1:7861)
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 ExecStart=$QWEN_DIR/venv/bin/python $REPO/backend/qwen_asr_server.py $QWEN_MODEL

@@ -293,13 +293,14 @@ class QwenASRClient:
                                          data=qwen_asr_wire.encode(stream.audio, stream.rate, self.keyterms),
                                          headers={"Content-Type": "application/json"})
             with urllib.request.urlopen(req, timeout=self.timeout) as r:
-                stream.result.text = json.load(r)["text"]
+                text = json.load(r)["text"]
+            stream.result.text = text if isinstance(text, str) else ""
         except Exception as e:  # down, slow, 500, bad JSON: a missed sentence, never a crashed pipeline
             stream.result.text = ""
             if time.monotonic() - self._last_warned > 30:
                 self._last_warned = time.monotonic()
                 logger.warning(f"Qwen speech service on 127.0.0.1:{self.port} not answering ({e}): "
-                               "is voice-instinct-qwen.service running?")
+                               "is voice-instinct-qwen.service running? (it takes about a minute to warm up)")
 
 
 # The official sherpa-onnx int8 builds; install.sh downloads the configured one (same names there).

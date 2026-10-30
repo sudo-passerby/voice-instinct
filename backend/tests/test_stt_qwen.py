@@ -83,6 +83,15 @@ def test_a_server_error_gives_empty_text():
         srv.shutdown()
 
 
+def test_a_non_string_text_gives_empty_text():
+    srv = _serve(lambda p, b: (200, {"text": None}))
+    try:
+        client = services.QwenASRClient(["Nova"], port=srv.server_port)
+        assert _transcribe(client, np.zeros(1600, np.float32)) == ""
+    finally:
+        srv.shutdown()
+
+
 class _Fake:
     def create_stream(self):
         raise AssertionError
