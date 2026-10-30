@@ -116,7 +116,7 @@ def load(path=None) -> Config:
         raise ValueError('config.toml: [stt] language must be "en" for now (it also covers Hinglish)')
     k = cfg.stt_keyterms
     if not isinstance(k, list) or len(k) > 50 or not all(isinstance(x, str) and 0 < len(x.strip()) <= 40 for x in k):
-        raise ValueError("config.toml: [stt] keyterms must be a list of up to 50 words or short phrases")
+        raise ValueError("config.toml: [stt] keyterms must be a list of up to 50 words or short phrases (each 1 to 40 characters)")
     cfg.stt_keyterms = [x.strip() for x in k]
     t = cfg.voice_threshold
     if isinstance(t, bool) or not isinstance(t, (int, float)) or not 0 <= t <= 1:

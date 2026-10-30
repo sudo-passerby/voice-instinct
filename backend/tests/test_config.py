@@ -203,7 +203,7 @@ def test_keyterms_must_be_a_short_list_of_short_strings(tmp_path):
     p = tmp_path / "c.toml"
     for bad in ('"Priya"', '[""]', '[5]', '["' + "x" * 41 + '"]', "[" + ", ".join(['"t"'] * 51) + "]"):
         p.write_text(f"[stt]\nkeyterms = {bad}\n")
-        with pytest.raises(ValueError, match=r"\[stt\] keyterms must be a list of up to 50 words or short phrases"):
+        with pytest.raises(ValueError, match=r"\[stt\] keyterms must be a list of up to 50 words or short phrases \(each 1 to 40 characters\)"):
             load(p)
 
 
