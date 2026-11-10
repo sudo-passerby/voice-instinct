@@ -230,6 +230,17 @@ def test_the_repo_outside_home_is_protected_with_an_absolute_rule():
     assert "Edit(//opt/app/**)" in s["permissions"]["deny"] and "/opt/app" in s["sandbox"]["filesystem"]["denyWrite"]
 
 
+def test_the_nightly_run_has_no_shell():
+    # Its Edit denies hold for its own edits, but a shell could still delete memory files or .git (a failed run
+    # that "deleted a file via the shell" would then be beyond the rollback). It needs none: git is consolidate.py's.
+    from autonomy import consolidation_settings
+    from consolidate import CONSOLIDATE_PROMPT
+    s = consolidation_settings(HOME, APP, DATA)
+    assert "Bash" in s["permissions"]["deny"]
+    assert "Bash" not in s["permissions"].get("allow", [])
+    assert "shell" not in CONSOLIDATE_PROMPT.lower() and "bash" not in CONSOLIDATE_PROMPT.lower()
+
+
 def test_the_nightly_run_gets_the_same_protections():
     from autonomy import consolidation_settings
     rules = consolidation_settings(HOME, APP, DATA)["permissions"]["deny"]
