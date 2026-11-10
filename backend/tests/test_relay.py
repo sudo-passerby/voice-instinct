@@ -680,3 +680,42 @@ def test_a_note_in_flight_is_dropped_when_a_new_session_attaches():
 
     assert run(go()) == ["dropped"]
 
+
+
+def test_a_note_whose_turn_never_starts_is_dropped_after_a_while():
+    # A missed turn-started event must not hold the note (and every note after it) forever.
+    async def go():
+        relay = Relay(Registry())
+        relay.note_start_timeout = 0.1  # 30 s in real use
+        task = FakeTask()
+        await relay.attach_and_pump(task, FakeContext())
+        events = []
+        for n in ("1", "2"):
+            relay.say(n, on_spoken=lambda n=n: events.append("spoken" + n), on_dropped=lambda n=n: events.append("dropped" + n))
+        await asyncio.sleep(0.01)
+        first = (len(task.frames), list(events))
+        await asyncio.sleep(0.14)  # no bot turn ever starts: note 1 is dropped, note 2 handed on (and still waiting)
+        return first, len(task.frames), events
+
+    assert run(go()) == ((1, []), 2, ["dropped1"])
+
+
+def test_a_note_whose_turn_started_is_not_dropped_by_the_watchdog():
+    async def go():
+        relay = Relay(Registry())
+        relay.note_start_timeout = 0.05
+        task = FakeTask()
+        await relay.attach_and_pump(task, FakeContext())
+        events = []
+        relay.say("x", on_spoken=lambda: events.append("spoken"), on_dropped=lambda: events.append("dropped"))
+        await asyncio.sleep(0.01)
+        relay.bot_turn(True)  # a long reply: still going when the watchdog fires
+        await asyncio.sleep(0.1)
+        relay.bot_turn(False, spoken=True)
+        return events
+
+    assert run(go()) == ["spoken"]
+
+
+def test_the_note_watchdog_waits_30_seconds_by_default():
+    assert Relay(Registry()).note_start_timeout == 30.0
