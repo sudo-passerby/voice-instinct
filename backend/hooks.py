@@ -33,23 +33,44 @@ STEP_MATCHER = "*"
 SNAPSHOT_CAP = 200_000  # characters of the latest page snapshot kept per session
 
 
+_IS_REF = re.compile(r"^(f\d+)?e\d+$")  # Playwright MCP 0.0.83's own test (targetLocators): else it is a selector
+# A snapshot node (Playwright's aria YAML, renderAriaSnapshotAsYaml): `- role "name" [attr] [attr]...`, then an
+# optional `: text`. The name is JSON-quoted, so a quote inside it is escaped.
+_NODE = re.compile(r'^\s*- ([^\s":\[]+)(?: ("(?:[^"\\]|\\.)*"))?((?: \[[^\]\s]*\])*)(?::\s?(.*))?$')
+_SNAPSHOT_LINK = re.compile(r"^- \[Snapshot\]\((.+)\)$", re.M)  # a page-changing step's snapshot, in a file
+
+
+def _targets(inp):
+    """What a browser step names as its element(s): `target` (0.0.83, which install.sh pins), or the older `ref`;
+    its own and its form fields'."""
+    items = [inp, *[f for f in inp.get("fields") or [] if isinstance(f, dict)]]
+    return [str(t) for i in items if (t := i.get("target") or i.get("ref"))]
+
+
 def _refs(inp):
-    """Every page ref a browser step acts on: its own and its form fields'."""
-    return [str(r) for r in (inp.get("ref"), *[f.get("ref") for f in inp.get("fields") or [] if isinstance(f, dict)])
-            if r]
+    return [t for t in _targets(inp) if _IS_REF.match(t)]
 
 
-def snapshot_line(snapshot, ref):
-    """The snapshot's line for [ref=<ref>] (Playwright MCP's aria YAML: `- button "Pay ₹5000" [ref=e42] ...`),
-    without its leading dash, or None."""
-    m = re.search(rf"^\s*- (.*\[ref={re.escape(ref)}\].*)$", snapshot or "", re.M)
-    return m.group(1).strip() if m else None
+def snapshot_node(snapshot, ref):
+    """(role, name, text) of the node whose own attributes hold [ref=<ref>], or None. A "[ref=...]" inside a
+    node's quoted name or its text is page content, never taken for the node's ref."""
+    want = f"ref={ref}"
+    for line in (snapshot or "").splitlines():
+        if f"[{want}]" not in line or not (m := _NODE.match(line)):
+            continue
+        if want in re.findall(r"\[([^\]]*)\]", m.group(3) or ""):
+            try:
+                name = json.loads(m.group(2)) if m.group(2) else ""
+            except ValueError:
+                name = m.group(2)[1:-1]
+            return m.group(1), str(name), (m.group(4) or "").strip()
+    return None
 
 
-def _real_name(line):
-    """`button "Pay ₹5000"` from a snapshot line: the role and accessible name, no [attributes] or children."""
-    head = line.split(" [ref=")[0]
-    return re.sub(r"( \[[\w-]+(=[^\]]*)?\])+$", "", head)
+def _real_name(node):
+    """`button "Pay ₹5000"`: the role and accessible name (or its text), as said in the question."""
+    role, name, text = node
+    return f'{role} "{name}"' if name else f"{role}: {text[:80]}" if text else role
 
 
 def hook_response(decision):
@@ -72,7 +93,8 @@ def pre_tool_response(decision):
 def _browser_target(inp):
     """What a browser step acts on, as its tool input names it. Never typed text or form values."""
     fields = [str(f.get("name")) for f in inp.get("fields") or [] if isinstance(f, dict) and f.get("name")]
-    return " ".join(str(x) for x in (inp.get("element"), *fields, inp.get("key")) if x)
+    selectors = [t for t in _targets(inp) if not _IS_REF.match(t)]  # a selector is the agent's own words too
+    return " ".join(str(x) for x in (inp.get("element"), *fields, *selectors, inp.get("key")) if x)
 
 
 def describe(tool_name, tool_input, page=None, real=None):
@@ -80,9 +102,11 @@ def describe(tool_name, tool_input, page=None, real=None):
     if tool_name == "mcp__browser__browser_handle_dialog":  # the dialog's own text never reaches the hook
         return "accept a pop-up the site opened" + (f" on {page}" if page else "") + (
             f", answering {str(inp['promptText'])[:80]!r}" if inp.get("promptText") else "") + " (it may confirm a payment)"
-    if str(tool_name).startswith("mcp__browser__") and (inp.get("element") or inp.get("fields") or inp.get("key")):
+    if str(tool_name).startswith("mcp__browser__") and (inp.get("element") or inp.get("fields") or inp.get("key")
+                                                       or _targets(inp)):
         # The element text is the agent's own description: give the page ref it really targets as well.
-        notes = [f"ref {inp['ref']}"] if inp.get("ref") else []
+        own = inp.get("target") or inp.get("ref")
+        notes = [f"ref {own}"] if own and _IS_REF.match(str(own)) else []
         if real:  # the page's own name for what it targets, from the latest snapshot
             notes.append(f"on the page: {'; '.join(real)}")
         ref = f" ({', '.join(notes)})" if notes else ""
@@ -98,7 +122,7 @@ class HookBridge:
         self.reg, self.relay, self.timeout = registry, relay, permission_timeout
         self._waiters: dict[int, asyncio.Future] = {}
         self._pages: dict[str, str] = {}  # session -> the page its browser last reported (PostToolUse)
-        self._snapshots: dict[str, str] = {}  # session -> its latest page snapshot text, capped
+        self._snapshots: dict[str, str | Path] = {}  # session -> its latest snapshot: text (capped) or its file
 
     def resolve(self, qid, decision):
         fut = self._waiters.get(qid)
@@ -129,11 +153,43 @@ class HookBridge:
         sid = p.get("session_id")
         if not sid or not str(p.get("tool_name", "")).startswith("mcp__browser__"):
             return
-        if url := page_url(p.get("tool_response")):
+        texts = list(_texts(p.get("tool_response")))
+        url = page_url(texts)
+        if url:
             self._pages[sid] = url
-        snap = "\n".join(t for t in _texts(p.get("tool_response")) if "[ref=" in t)
-        if snap:  # Playwright MCP sends the full snapshot after each page-changing step (--snapshot-mode full)
-            self._snapshots[sid] = snap[:SNAPSHOT_CAP]
+        inline = "\n".join(t for t in texts if "[ref=" in t)  # browser_snapshot: the snapshot itself
+        link = next((m.group(1) for t in texts if (m := _SNAPSHOT_LINK.search(t))), None)
+        if inline:
+            self._snapshots[sid] = inline[:SNAPSHOT_CAP]
+        elif link and (f := self._snapshot_file(link, p.get("cwd"))):
+            self._snapshots[sid] = f  # a page-changing step: a page-*.yml link, read when a step is judged
+        elif url:
+            self._snapshots.pop(sid, None)  # a new page and no snapshot of it: never say the old page's names
+
+    @staticmethod
+    def _snapshot_file(link, cwd):
+        """The linked snapshot file, only inside the errand's own folder (Playwright MCP writes it to
+        <cwd>/.playwright-mcp and links it relative to cwd). ponytail: its tmpdir fallback (cwd not writable) is
+        not followed; the click is then judged on the agent's words and the page URL."""
+        if not cwd:
+            return None
+        try:
+            root = Path(cwd).resolve()
+            f = (root / link).resolve()
+        except (OSError, ValueError, RuntimeError):
+            return None
+        return f if f.suffix == ".yml" and f.is_relative_to(root) else None
+
+    def _snapshot_text(self, sid):
+        """The latest snapshot's text, capped; a linked file is read now (the hook runs outside the sandbox)."""
+        snap = self._snapshots.get(sid)
+        if isinstance(snap, Path):
+            try:
+                with open(snap, encoding="utf-8", errors="replace") as f:
+                    return f.read(SNAPSHOT_CAP)
+            except OSError:
+                return ""
+        return snap or ""
 
     async def on_pre_tool_use(self, p):
         """A click, form fill or key press that may pay, buy, order or book asks the user first. Otherwise no
@@ -147,13 +203,15 @@ class HookBridge:
         page = self._pages.get(sid)
         dialog = tool == "mcp__browser__browser_handle_dialog"
         # `element` is written by the agent: also judge the line the page itself has for each ref.
-        lines = [ln for r in _refs(inp) if (ln := snapshot_line(self._snapshots.get(sid), r))]
-        if not sid or not (dialog or MONEY_WORDS.search(" ".join([_browser_target(inp), page or "", *lines]))):
+        snapshot = self._snapshot_text(sid) if _refs(inp) else ""
+        nodes = [n for r in _refs(inp) if (n := snapshot_node(snapshot, r))]
+        if not sid or not (dialog or MONEY_WORDS.search(" ".join([_browser_target(inp), page or "",
+                                                                    *(" ".join(n) for n in nodes)]))):
             return {}
         logger.info(f"hook PreToolUse: a purchase-like step ({sid[:8]})")
         self.reg.upsert_session(sid, cwd=p.get("cwd"))
         self.reg.add_event(sid, "PreToolUse", p)
-        real = [_real_name(ln) for ln in lines]
+        real = [_real_name(n) for n in nodes]
         return pre_tool_response(await self.ask(sid, "permission", describe(p.get("tool_name"), inp, page, real),
                                                 p.get("tool_name"), inp))
 

@@ -252,9 +252,10 @@ def test_the_step_hook_sees_every_tool_the_agent_uses():
     assert STEP_MATCHER == "*"  # Claude Code's matcher for every tool
 
 
-def _click(element, ref="e12", sid="s1", tool="mcp__browser__browser_click", **inp):
+def _click(element, target="e12", sid="s1", tool="mcp__browser__browser_click", **inp):
+    """Playwright MCP 0.0.83's shape (install.sh pins it): the element is named by `target`, a snapshot ref."""
     return {"session_id": sid, "cwd": "/w", "hook_event_name": "PreToolUse", "tool_name": tool,
-            "tool_input": {"element": element, "ref": ref, **inp} if element else {"ref": ref, **inp}}
+            "tool_input": {"element": element, "target": target, **inp} if element else {"target": target, **inp}}
 
 
 def _answer(b, reg, payload, decision):
@@ -297,7 +298,7 @@ def test_a_no_or_no_answer_blocks_the_purchase():
     b, reg, _ = make(timeout=0.05)
     out, _ = _answer(b, reg, _click("Place order"), "deny")
     assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
-    out, _ = _answer(b, reg, _click("Pay now", ref="e13"), None)  # times out
+    out, _ = _answer(b, reg, _click("Pay now", target="e13"), None)  # times out
     assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
@@ -314,7 +315,7 @@ def test_the_question_names_the_real_target_and_the_page():
     b, reg, _ = make()
     b.note_page({"session_id": "s1", "tool_name": "mcp__browser__browser_navigate",
                  "tool_response": [{"type": "text", "text": "- Page URL: https://shop.example/checkout\n"}]})
-    out, qs = _answer(b, reg, _click("Continue", ref="e42"), "allow")  # harmless words, but a checkout page
+    out, qs = _answer(b, reg, _click("Continue", target="e42"), "allow")  # harmless words, but a checkout page
     assert qs[0]["prompt"] == "browser_click: Continue (ref e42) on https://shop.example/checkout"
 
 
@@ -335,11 +336,77 @@ def test_a_click_is_judged_by_the_snapshots_real_name_not_the_agents_description
     b, reg, _ = make()
     b.note_page({"session_id": "s1", "tool_name": "mcp__browser__browser_snapshot",
                  "tool_response": [{"type": "text", "text": SNAPSHOT}]})
-    out, qs = _answer(b, reg, _click("Continue", ref="e42"), "deny")
+    out, qs = _answer(b, reg, _click("Continue", target="e42"), "deny")
     assert len(qs) == 1 and out["hookSpecificOutput"]["permissionDecision"] == "deny"
     assert 'button "Pay ₹5000"' in qs[0]["prompt"] and "e42" in qs[0]["prompt"]
     # The real "Continue shopping" button on the same page is left alone.
-    assert _answer(b, reg, _click("Continue", ref="e41"), None) == ({}, [])
+    assert _answer(b, reg, _click("Continue", target="e41"), None) == ({}, [])
+
+
+SNAP_FILE = "./.playwright-mcp/page-2026-11-10T12-00-00-000Z.yml"
+# A page-changing step's response in 0.0.83: the snapshot is written to a file and only linked.
+LINKED = f"""### Ran Playwright code
+```js
+await page.getByRole('link', {{ name: 'Cart' }}).click();
+```
+### Page
+- Page URL: https://shop.example/cart
+- Page Title: Cart
+### Snapshot
+- [Snapshot]({SNAP_FILE})"""
+
+
+def test_a_snapshot_linked_as_a_file_is_read_when_the_step_is_judged(tmp_path):
+    b, reg, _ = make()
+    b.note_page({"session_id": "s1", "cwd": str(tmp_path), "tool_name": "mcp__browser__browser_click",
+                 "tool_response": [{"type": "text", "text": LINKED}]})
+    f = tmp_path / SNAP_FILE
+    f.parent.mkdir()
+    f.write_text(SNAPSHOT.split("```yaml\n")[1].split("```")[0])  # read at PreToolUse time, not when linked
+    out, qs = _answer(b, reg, _click("Continue", target="e42"), "deny")
+    assert len(qs) == 1 and 'button "Pay ₹5000"' in qs[0]["prompt"]
+
+
+def test_a_linked_file_outside_the_errands_folder_is_never_read(tmp_path):
+    b, _, _ = make()
+    (tmp_path / "w").mkdir()
+    (tmp_path / "x.yml").write_text('- button "Pay" [ref=e42]')
+    b.note_page({"session_id": "s1", "cwd": str(tmp_path / "w"), "tool_name": "mcp__browser__browser_click",
+                 "tool_response": "- Page URL: https://a.example/\n- [Snapshot](../x.yml)"})
+    assert b._snapshot_text("s1") == ""
+
+
+def test_a_ref_inside_a_name_or_text_is_never_taken_for_the_nodes_own():
+    # Page text can say "[ref=e42]": only the line whose own attributes hold it is e42.
+    b, reg, _ = make()
+    spoof = """### Snapshot
+```yaml
+- paragraph [ref=e40]: Continue [ref=e42] to the next step
+- link "Say \\"hi\\" [ref=e42]" [ref=e41] [cursor=pointer]
+- button "Pay ₹5000" [ref=e42] [cursor=pointer]
+```"""
+    b.note_page({"session_id": "s1", "tool_name": "mcp__browser__browser_snapshot", "tool_response": spoof})
+    out, qs = _answer(b, reg, _click("Continue", target="e42"), "deny")
+    assert len(qs) == 1 and 'button "Pay ₹5000"' in qs[0]["prompt"] and "paragraph" not in qs[0]["prompt"]
+
+
+def test_a_new_page_without_a_snapshot_forgets_the_old_one():
+    b, reg, _ = make()
+    b.note_page({"session_id": "s1", "tool_name": "mcp__browser__browser_snapshot", "tool_response": SNAPSHOT})
+    b.note_page({"session_id": "s1", "tool_name": "mcp__browser__browser_navigate_back",
+                 "tool_response": "### Page\n- Page URL: https://news.example/\n- Page Title: News"})
+    assert _answer(b, reg, _click("Continue", target="e42"), None) == ({}, [])  # the old page's Pay is gone
+
+
+def test_a_selector_target_is_judged_by_its_own_words_and_the_old_ref_key_still_works():
+    b, reg, _ = make()
+    out, qs = _answer(b, reg, _click("Continue", target="text=Pay now"), "deny")
+    assert len(qs) == 1 and "text=Pay now" in qs[0]["prompt"]
+    b.note_page({"session_id": "s1", "tool_name": "mcp__browser__browser_snapshot", "tool_response": SNAPSHOT})
+    old = {"session_id": "s1", "cwd": "/w", "tool_name": "mcp__browser__browser_click",
+           "tool_input": {"element": "Continue", "ref": "e42"}}
+    out, qs = _answer(b, reg, old, "deny")
+    assert len(qs) == 1 and 'button "Pay ₹5000"' in qs[0]["prompt"]
 
 
 def test_the_kept_snapshot_is_bounded():
@@ -352,7 +419,7 @@ def test_the_kept_snapshot_is_bounded():
 def test_form_fills_and_key_presses_are_gated_too():
     b, reg, _ = make()
     fill = _click(None, tool="mcp__browser__browser_fill_form",
-                  fields=[{"name": "Card number", "ref": "e3", "value": "4111"}, {"name": "Pay", "ref": "e4"}])
+                  fields=[{"name": "Card number", "target": "e3", "value": "4111"}, {"name": "Pay", "target": "e4"}])
     out, qs = _answer(b, reg, fill, "allow")
     assert len(qs) == 1 and "4111" not in qs[0]["prompt"]  # field names, never their values
     b.note_page({"session_id": "s2", "tool_name": "mcp__browser__browser_click",
