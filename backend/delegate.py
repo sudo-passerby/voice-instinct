@@ -16,11 +16,16 @@ from workspace import resolve_workdir
 GONE = "That errand can't be continued: its session is gone. Start it again?"
 
 
+def errand_lock():
+    """One errand at a time, for the whole process: bot.py makes one and gives it to every session's tools."""
+    return {"running": False, "sid": None}  # ponytail: single user, one errand at a time
+
+
 def make_tools(backend, registry, settings_for, on_finish=None, workspace_root=None, home=None, steps=None,
-               budget=None, memory=None):
+               budget=None, memory=None, lock=None):
     home = Path(home) if home else Path.home()
     workspace_root = Path(workspace_root) if workspace_root else home / ".voice-instinct" / "workspace"
-    state = {"running": False}  # ponytail: one errand at a time, single user
+    state = lock if lock is not None else errand_lock()
 
     # Async call (Pipecat: Function Calling > Per-Tool Options): barge-in must not cancel it, and the
     # framework deadline must outlive the backend's own timeout.
@@ -34,9 +39,14 @@ def make_tools(backend, registry, settings_for, on_finish=None, workspace_root=N
             errand: The errand id from an earlier result, to continue that errand; 0 for a new errand.
         """
         if state["running"]:
-            await params.result_callback({
-                "status": "busy",
-                "instruction": "Tell the user you are still working on the previous task."})
+            prior = registry.get_task(errand) if errand else None
+            if prior and prior["session_id"] == state["sid"]:  # resuming it now would run it twice
+                await params.result_callback({"status": "busy", "errand": errand, "instruction":
+                    "Tell the user that errand is still running and you will tell them when it is done."})
+            else:
+                await params.result_callback({
+                    "status": "busy",
+                    "instruction": "Tell the user you are still working on the previous task."})
             return
         state["running"] = True
         try:
@@ -59,6 +69,7 @@ def make_tools(backend, registry, settings_for, on_finish=None, workspace_root=N
             except (ValueError, OSError) as e:
                 await params.result_callback({"status": "error", "errand": errand, "result": str(e)})
                 return
+            state["sid"] = sid
             registry.upsert_session(sid, origin="delegated", mode="headless", state="running", cwd=str(wd))
             task_id = registry.create_task(sid, task)
             logger.info(f"task {task_id} started (session {sid[:8]})")
@@ -116,6 +127,6 @@ def make_tools(backend, registry, settings_for, on_finish=None, workspace_root=N
                         "table, and offer more details; answer follow-ups from this result, or call delegate "
                         "again with this errand id to continue it."})
         finally:
-            state["running"] = False
+            state["running"], state["sid"] = False, None
 
     return [delegate]

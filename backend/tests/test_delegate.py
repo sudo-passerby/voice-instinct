@@ -429,3 +429,29 @@ def test_an_errand_whose_session_is_gone_says_so_plainly():
     p, out = make_params()
     run(delegate(p, "check again", errand=errand))
     assert out[-1]["status"] == "error" and GONE in out[-1]["result"]
+
+
+def test_one_errand_at_a_time_for_the_whole_process_and_never_the_same_one_twice():
+    # Each voice session builds its own tools; the lock is shared (bot.py), so a second session can't start
+    # a second errand, and asking to continue the running one says so.
+    from delegate import errand_lock
+
+    async def go():
+        gate, reg, lock = asyncio.Event(), Registry(), errand_lock()
+        b = GatedBackend(gate)
+        (first,) = make_tools(b, reg, lambda sid: None, lock=lock)
+        (second,) = make_tools(b, reg, lambda sid: None, lock=lock)  # another session's tools
+        p1, out1 = make_params()
+        t = asyncio.create_task(first(p1, "first"))
+        await asyncio.sleep(0)
+        p2, out2 = make_params()
+        await second(p2, "other")
+        p3, out3 = make_params()
+        await second(p3, "more on it", errand=out1[0]["errand"])
+        gate.set()
+        await t
+        return b, out2, out3
+
+    b, out2, out3 = run(asyncio.wait_for(go(), 3))
+    assert b.calls == ["first"] and out2[-1]["status"] == "busy" and out3[-1]["status"] == "busy"
+    assert "still running" in out3[-1]["instruction"] and "previous" in out2[-1]["instruction"]

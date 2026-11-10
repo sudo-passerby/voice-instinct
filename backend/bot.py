@@ -18,7 +18,7 @@ from claude_cli import ClaudeCodeBackend
 from clock import current_time
 from config import REPO_ROOT, load
 from debugbrowser import launch as launch_debug_browser
-from delegate import make_tools
+from delegate import errand_lock, make_tools
 from gui import make_gui_router
 from guard import refuse_other_origins
 from hooks import HookBridge, hide_hook_tokens, load_token, make_router, write_run_settings
@@ -132,6 +132,13 @@ def _browser_config():
 
 
 HOOK_PORT = 7860  # the runner's port: hooks post back to this same server
+# One backend and one errand lock for the process, like bridge and relay: a second voice session can't start a
+# second errand, and stop_session can stop a run that any session started.
+BACKEND = ClaudeCodeBackend(cmd=os.environ.get("VI_CLAUDE", "claude"), cwd=cfg.backend_cwd,
+                            timeout=cfg.backend_timeout, permission_mode=cfg.permission_mode,
+                            hide_env=(cfg.api_key_env, "TELEGRAM_CHAT_ID"),  # the bot token goes as *_TOKEN
+                            about_user=lambda: MEMORY.prompt_block(errand=True))  # read fresh per errand
+ERRANDS = errand_lock()
 
 NO_AGENT = (
     " Right now Claude Code is not available on this computer, so you cannot run "
@@ -148,11 +155,8 @@ async def bot(runner_args: RunnerArguments):
     _quiet_logs()
     transport = await create_transport(runner_args, transport_params)
 
-    backend = ClaudeCodeBackend(cmd=os.environ.get("VI_CLAUDE", "claude"), cwd=cfg.backend_cwd,
-                                timeout=cfg.backend_timeout, permission_mode=cfg.permission_mode,
-                                hide_env=(cfg.api_key_env, "TELEGRAM_CHAT_ID"),  # the bot token goes as *_TOKEN
-                                mcp_config=_browser_config(),
-                                about_user=lambda: MEMORY.prompt_block(errand=True))  # read fresh per errand
+    backend = BACKEND
+    backend.mcp_config = _browser_config()  # looked up per connect, as before: a browser installed since counts
     # The name is set in config.toml, never from history; the profile is read fresh at every connect (#25).
     prompt = f"Your name is {cfg.name}. " + SYSTEM_PROMPT
     llm = build_llm(cfg, (prompt if backend.available() else prompt + NO_AGENT) + MEMORY.prompt_block())
@@ -178,7 +182,7 @@ async def bot(runner_args: RunnerArguments):
         # Tools declare their own options with @tool_options; the context's tools (make_context) are the registration.
         tools += [*make_tools(backend, registry, settings_for, on_finish=bridge.expire_session,
                              workspace_root=Path(cfg.workspace_dir).expanduser(), steps=STEPS, budget=BUDGET,
-                             memory=MEMORY),
+                             memory=MEMORY, lock=ERRANDS),
                  *make_bridge_tools(bridge, relay, registry, backend)]
     else:
         logger.warning("claude CLI not found; running front-model-only")
