@@ -52,7 +52,8 @@ def _verdict(reply: str, question: str = "", names=()):
     w = set(words)
     if re.search(r"\bnot (sure|certain)\b|\bdon'?t know\b", " ".join(words)):
         return "unclear", words
-    cancel_ok = bool(_ABOUT_CANCEL.search(question or "")) and w & _EXPLICIT_YES
+    # Not from a page address: "Pay now on https://x/stop-and-shop" is no question about stopping.
+    cancel_ok = bool(_ABOUT_CANCEL.search(re.sub(r"\S+://\S+", " ", question or ""))) and w & _EXPLICIT_YES
     if w & _NO or any(x.endswith("n't") for x in w) or (w & _CANCEL and not cancel_ok):
         return "no", words
     if "?" in reply or w & _UNSURE:

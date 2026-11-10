@@ -48,6 +48,7 @@ def test_cancel_or_stop_on_any_other_question_means_no():
     # "Pay ₹500?" "Yes... stop": not a go-ahead to pay.
     for s in ["Yes, cancel it.", "yes stop", "yeah go ahead and cancel", "sure, stop"]:
         assert classify(s, "browser_click: Pay now (ref e4)") == "no", s
+        assert classify(s, "browser_click: Pay now (ref e4) on https://shop.example/stop-and-shop") == "no", s
         assert classify(s) == "no", s
 
 
