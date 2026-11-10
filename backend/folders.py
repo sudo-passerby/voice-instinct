@@ -143,7 +143,8 @@ def covers(granted, wanted) -> bool:
 def tilde(p, home) -> str:
     """A folder as the user would say it: ~/Documents/trip."""
     try:
-        return "~/" + Path(p).relative_to(Path(home).resolve()).as_posix()
+        rel = Path(p).relative_to(Path(home).resolve()).as_posix()
+        return "~" if rel == "." else "~/" + rel
     except ValueError:
         return str(p)
 

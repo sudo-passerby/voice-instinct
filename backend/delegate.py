@@ -130,6 +130,12 @@ def make_tools(backend, registry, settings_for, on_finish=None, workspace_root=N
                     access = max((a for a in (access, held["access"], folders.access(folder)) if a), key=LEVELS.get)
                 if folder is None and not wd.is_relative_to(workspace_root.resolve()):
                     folder = wd  # an errand from before grants ran in the user's folder: it needs one now
+                    if folders.refusal(folder):  # and can never get one there (~ itself, a dot-folder, ...)
+                        await params.result_callback({"status": "refused", "errand": errand, "result": (
+                            f"That errand worked in {tilde(folder, home)}, which I can't use any more. Start it "
+                            "again as a new errand, and name a folder if it needs one."),
+                            "instruction": "Tell the user in one short sentence."})
+                        return
                 if folder is not None and folder.is_relative_to(workspace_root.resolve()):
                     folder = None  # the private workspace needs no grant
             except (ValueError, OSError) as e:

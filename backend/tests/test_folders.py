@@ -195,6 +195,17 @@ def test_a_resume_that_repeats_the_folder_keeps_its_higher_access(w):
     assert asked == [] and w.grants[-1] == ((w.home / "Documents/trip").resolve(), "write")
 
 
+@pytest.mark.parametrize("cwd", ["", ".config"])  # ~ itself, a dot-folder
+def test_an_old_errand_whose_folder_is_now_refused_is_told_to_start_again(w, cwd):
+    # Errands from before grants could run in any folder in home; resuming one there is refused, kindly.
+    sid = "old-errand"
+    w.reg.upsert_session(sid, origin="delegated", mode="headless", state="idle", cwd=str(w.home / cwd))
+    task = w.reg.create_task(sid, "sort my files")
+    out, asked = w.go(w.delegate, "and the rest", errand=task)
+    assert asked == [] and w.backend.calls == [] and out[-1]["status"] == "refused"
+    assert "new errand" in out[-1]["result"] and "~/." not in out[-1]["result"].replace("~/.config", "")
+
+
 def test_a_refused_resume_leaves_the_errand_idle_not_running(w):
     out, _ = w.go(w.delegate, "plan the trip", "~/Documents/trip", reply="yes")
     sid = w.backend.calls[-1]["sid"]
