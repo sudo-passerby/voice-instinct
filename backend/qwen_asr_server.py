@@ -18,6 +18,12 @@ from config import QWEN_ASR_PORT
 
 # The prompt ends with the language preamble, so Qwen doesn't spend tokens writing it (measured: same text, faster).
 PREFILL = "language English<asr_text>"
+MAX_BODY = 4 * 1024 * 1024  # a 20 s segment (the client's longest) is about 0.9 MB on the wire
+
+
+def body_fits(content_length: str) -> bool:
+    """Checked before the body is read: anything bigger is answered 413, never held in memory."""
+    return 0 <= int(content_length) <= MAX_BODY
 
 
 def messages(audio, keyterms: list[str]) -> list[dict]:
@@ -68,6 +74,8 @@ def main(model_dir: str, port: int = QWEN_ASR_PORT):
     lock = threading.Lock()  # one GPU model: one request at a time
 
     class Handler(BaseHTTPRequestHandler):
+        timeout = 30  # seconds per socket read or write: a stalled client must not hold a thread forever
+
         def _reply(self, code: int, body: dict):
             data = json.dumps(body).encode()
             self.send_response(code)
@@ -83,6 +91,8 @@ def main(model_dir: str, port: int = QWEN_ASR_PORT):
             if self.path != "/transcribe":
                 return self._reply(404, {"error": "not found"})
             try:
+                if not body_fits(self.headers["Content-Length"]):
+                    return self._reply(413, {"error": f"body over {MAX_BODY} bytes"})
                 audio, rate, terms = qwen_asr_wire.decode(self.rfile.read(int(self.headers["Content-Length"])))
                 with lock:
                     text = transcribe(audio, rate, terms)
