@@ -24,7 +24,7 @@ _EVENTS = ("PermissionRequest", "Stop", "SessionEnd", "SessionStart")
 # Playwright MCP writes it from outside the sandbox, over the page snapshots this guard reads if it likes.
 PRE_TOOL_MATCHER = "^mcp__browser__"
 _GATED = re.compile("^mcp__browser__browser_(click|fill_form|press_key|type|press_sequentially|keydown"
-                    "|select_option|handle_dialog|drag|drop)$")
+                    "|select_option|handle_dialog|drag)$")  # browser_drop is denied (autonomy.py)
 # The tools whose response carries a page snapshot (Response.setIncludeSnapshot / setIncludeFullSnapshot in
 # Playwright MCP 0.0.83's coreBundle.js): only their "### Snapshot" link is the page's.
 _SNAPSHOTTING = {f"mcp__browser__browser_{t}" for t in (

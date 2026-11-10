@@ -61,6 +61,7 @@ def resolver_rules():
 # The errand browser's tools that run code outside the sandbox or read local files into a page, and
 # browser_evaluate: page JS could click "Pay" without the purchase guard (hooks.PRE_TOOL_MATCHER) seeing it.
 _BROWSER_DENY = ("mcp__browser__browser_run_code_unsafe", "mcp__browser__browser_file_upload",
+                 "mcp__browser__browser_drop",  # its paths= reads local files into the page, like file_upload
                  "mcp__browser__browser_evaluate")
 
 

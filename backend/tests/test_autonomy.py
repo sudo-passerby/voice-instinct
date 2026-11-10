@@ -79,6 +79,8 @@ def test_the_browsers_code_running_tools_are_denied_in_every_mode():
     assert "mcp__browser__browser_run_code_unsafe" in deny and "mcp__browser__browser_file_upload" in deny
     # browser_evaluate runs model-written JS in the page: it could click "Pay" past the purchase guard (hooks.py).
     assert "mcp__browser__browser_evaluate" in deny
+    # browser_drop with paths reads local files into the page from outside the sandbox, like file_upload.
+    assert "mcp__browser__browser_drop" in deny
 
 
 def test_the_shell_cannot_reach_any_host_beyond_the_hook_port():

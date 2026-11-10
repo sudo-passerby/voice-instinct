@@ -831,6 +831,5 @@ def test_a_drag_is_gated_and_both_its_ends_are_judged():
     assert len(_answer(b, reg, drag, "deny")[1]) == 1  # either end
     drag["tool_input"] = {"startElement": "x", "startTarget": "e4", "endElement": "y", "endTarget": "e5"}
     assert _answer(b, reg, drag, None) == ({}, [])
-    drop = {"session_id": "s1", "tool_name": "mcp__browser__browser_drop",
-            "tool_input": {"element": "x", "target": "e3", "data": {"text/plain": "hi"}}}
-    assert len(_answer(b, reg, drop, "deny")[1]) == 1
+    from hooks import _GATED
+    assert not _GATED.match("mcp__browser__browser_drop")  # denied outright (autonomy._BROWSER_DENY)
