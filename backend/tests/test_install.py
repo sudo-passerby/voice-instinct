@@ -276,11 +276,13 @@ def test_electron_sandbox_helper_is_set_up_where_user_namespaces_are_restricted(
     assert ("sudo chmod 4755" in r.stdout and helper in r.stdout) == (restricted == "1")
 
 
-def render_unit(tmp_path, claude_bin):
+def render_unit(tmp_path, claude_bin, qwen=""):
     src = SCRIPT.read_text()
     body = src.split('write "$UNIT" 644 <<EOF\n', 1)[1].split("\nEOF\n", 1)[0]
+    deps = next(l.strip() for l in src.splitlines() if l.strip().startswith('[ -n "$QWEN" ] && qwen_deps='))
     script = tmp_path / "render.sh"
-    script.write_text(f'REPO=/r; uvbin=/u; HOME_DIR=/h; CLAUDE_BIN="{claude_bin}"\ncat <<EOF\n{body}\nEOF\n')
+    script.write_text(f'REPO=/r; uvbin=/u; HOME_DIR=/h; CLAUDE_BIN="{claude_bin}"; QWEN="{qwen}"; qwen_deps=""\n{deps}\n'
+                      f'cat <<EOF\n{body}\nEOF\n')
     return subprocess.run(["bash", str(script)], capture_output=True, text=True, check=True).stdout
 
 
@@ -373,7 +375,8 @@ def test_an_installed_errand_browser_is_kept_on_re_run(tmp_path):
     assert "keep errand browser" in r.stdout and "install chromium" not in r.stdout
 
 
-def run_with_engine(tmp_path, engine):
+def run_with_engine(tmp_path, engine, env=None, kfd=None, args=("--dry-run",)):
+    """kfd: a gfx_target_version for a fake KFD topology (GPU node 1); None means no AMD GPU, even on this laptop."""
     repo = clean_repo(tmp_path)
     if engine is not None:
         (repo / "config.toml").write_text(f'[stt]\nengine = "{engine}"\n')
@@ -381,8 +384,14 @@ def run_with_engine(tmp_path, engine):
     rel.write_text('ID=arch\nNAME="arch"\n')
     home = tmp_path / "home"
     home.mkdir(exist_ok=True)
-    env = {**os.environ, "VI_OS_RELEASE": str(rel), "VI_HOME": str(home), "VI_PKG_CHECK": "not-installed-tool"}
-    return subprocess.run(["bash", str(repo / "install.sh"), "--dry-run"], capture_output=True, text=True, env=env)
+    topo = tmp_path / "kfd"
+    if kfd is not None:
+        for node, gfx in ((0, 0), (1, kfd)):  # node 0 is the CPU, which reports 0
+            (topo / f"nodes/{node}").mkdir(parents=True)
+            (topo / f"nodes/{node}/properties").write_text(f"cpu_cores_count 0\ngfx_target_version {gfx}\n")
+    env = {**os.environ, "VI_OS_RELEASE": str(rel), "VI_HOME": str(home), "VI_PKG_CHECK": "not-installed-tool",
+           "VI_KFD_TOPOLOGY": str(topo), "VI_FREE_GB": "50", **(env or {})}
+    return subprocess.run(["bash", str(repo / "install.sh"), *args], capture_output=True, text=True, env=env)
 
 
 NEMOTRON = "sherpa-onnx-nemotron-speech-streaming-en-0.6b-160ms-int8-2026-04-25.tar.bz2"
@@ -394,12 +403,12 @@ WHISPER = {s: f"sherpa-onnx-whisper-{s}.tar.bz2" for s in ("tiny", "base", "smal
 @pytest.mark.parametrize("engine,wanted", [(None, NEMOTRON), ("nemotron", NEMOTRON),
                                            ("nemotron-multilingual", MULTI), ("parakeet", PARAKEET),
                                            ("whisper-tiny", WHISPER["tiny"]), ("whisper-base", WHISPER["base"]),
-                                           ("whisper-small", WHISPER["small"])])
+                                           ("whisper-small", WHISPER["small"]), ("qwen3-asr-gpu", None)])
 def test_only_the_chosen_speech_model_is_downloaded(tmp_path, engine, wanted):
-    r = run_with_engine(tmp_path, engine)
+    r = run_with_engine(tmp_path, engine, kfd=110501)
     assert r.returncode == 0, r.stderr
-    assert wanted in r.stdout
-    assert [m for m in (NEMOTRON, MULTI, PARAKEET, *WHISPER.values()) if m in r.stdout] == [wanted]
+    assert [m for m in (NEMOTRON, MULTI, PARAKEET, *WHISPER.values()) if m in r.stdout] == ([wanted] if wanted else [])
+    assert ("Qwen/Qwen3-ASR-1.7B-hf" in r.stdout) == (engine == "qwen3-asr-gpu")
 
 
 def test_an_installed_whisper_model_is_kept_on_re_run(tmp_path):
@@ -417,3 +426,136 @@ def test_an_unknown_speech_engine_stops_before_anything_is_installed(tmp_path):
     assert r.returncode == 1
     assert "[stt] engine must be one of nemotron, nemotron-multilingual, parakeet, whisper-tiny, whisper-base, whisper-small" in r.stderr
     assert "System packages" not in r.stdout and "would run" not in r.stdout
+
+
+def fake_nvidia(tmp_path):
+    bin_ = tmp_path / "nvbin"
+    bin_.mkdir(exist_ok=True)
+    (bin_ / "nvidia-smi").write_text("#!/bin/sh\nexit 0\n")
+    (bin_ / "nvidia-smi").chmod(0o755)
+    return {"PATH": f"{bin_}:{os.environ['PATH']}"}
+
+
+QWEN_UNIT = "voice-instinct-qwen.service"
+
+
+def test_qwen_on_gfx1151_uses_amds_index(tmp_path):
+    r = run_with_engine(tmp_path, "qwen3-asr-gpu", kfd=110501)
+    assert r.returncode == 0, r.stderr
+    for s in ("rocm.nightlies.amd.com/v2/gfx1151/", "torch==2.10.0+rocm7.13.0a20260513",
+              "torchaudio==2.10.0+rocm7.13.0a20260513", "transformers==5.22.1", "uv venv -p 3.12"):
+        assert s in r.stdout, s
+    dl = next(l for l in r.stdout.splitlines() if "snapshot_download" in l)
+    assert dl.endswith(" bcd2b5b7f32b480ab5790554cfa8347f246a14f3 " + str(tmp_path / "home/.voice-instinct/models/Qwen3-ASR-1.7B-hf.part"))
+
+
+def test_qwen_on_nvidia_uses_pypi_torch(tmp_path):
+    r = run_with_engine(tmp_path, "qwen3-asr-gpu", env=fake_nvidia(tmp_path))
+    assert r.returncode == 0, r.stderr
+    assert "rocm.nightlies" not in r.stdout
+    torch = next(l for l in r.stdout.splitlines() if "torch==" in l)
+    assert "--index-url" not in torch
+
+
+def no_nvidia():
+    """PATH without any real nvidia-smi, so "no GPU" holds on any test machine."""
+    return {"PATH": ":".join(d for d in os.environ["PATH"].split(":") if not os.path.exists(os.path.join(d, "nvidia-smi")))}
+
+
+def test_qwen_with_no_supported_gpu_stops_before_any_package_step(tmp_path):
+    r = run_with_engine(tmp_path, "qwen3-asr-gpu", env=no_nvidia())
+    assert r.returncode != 0 and "needs a supported GPU" in r.stderr
+    assert "pacman" not in r.stdout and "would run" not in r.stdout
+    r = run_with_engine(tmp_path / "other", "qwen3-asr-gpu", kfd=110001, env=no_nvidia())
+    assert r.returncode != 0 and "not supported yet" in r.stderr and "gfx1101" in r.stderr
+    assert "pacman" not in r.stdout
+
+
+def test_an_unsupported_amd_gpu_beside_an_nvidia_one_uses_pypi_torch(tmp_path):
+    r = run_with_engine(tmp_path, "qwen3-asr-gpu", kfd=110001, env=fake_nvidia(tmp_path))
+    assert r.returncode == 0, r.stderr
+    assert "rocm.nightlies" not in r.stdout and "torch==2.10.0 torchaudio==2.10.0" in r.stdout
+
+
+def test_qwen_install_stops_when_the_disk_is_nearly_full(tmp_path):
+    r = run_with_engine(tmp_path, "qwen3-asr-gpu", kfd=110501, env={"VI_FREE_GB": "5"})
+    assert r.returncode != 0 and "12 GB" in r.stderr
+    assert "snapshot_download" not in r.stdout and "would run" not in r.stdout
+
+
+def test_a_qwen_re_run_keeps_the_venv_and_model_and_skips_the_disk_check(tmp_path):
+    home = tmp_path / "home"
+    py = home / ".voice-instinct/qwen-asr/venv/bin/python"
+    py.parent.mkdir(parents=True)
+    py.write_text("")
+    py.chmod(0o755)
+    model = home / ".voice-instinct/models/Qwen3-ASR-1.7B-hf"
+    model.mkdir(parents=True)
+    (model / "config.json").write_text("{}")
+    r = run_with_engine(tmp_path, "qwen3-asr-gpu", kfd=110501, env={"VI_FREE_GB": "5"})
+    assert r.returncode == 0, r.stderr
+    assert "keep speech model Qwen3-ASR-1.7B-hf" in r.stdout and "snapshot_download" not in r.stdout
+    assert "uv venv" not in r.stdout
+    assert "torch==2.10.0+rocm7.13.0a20260513" in r.stdout  # pinned installs re-run: a no-op when already right
+
+
+def test_qwen_install_order_puts_gpu_torch_last_and_never_accelerate(tmp_path):
+    r = run_with_engine(tmp_path, "qwen3-asr-gpu", kfd=110501)
+    assert r.returncode == 0, r.stderr
+    lines = r.stdout.splitlines()
+    tf = next(i for i, l in enumerate(lines) if "transformers==5.22.1" in l)
+    torch = next(i for i, l in enumerate(lines) if "torch==" in l)
+    check = next(i for i, l in enumerate(lines) if "torch.cuda.is_available" in l)
+    assert tf < torch < check
+    assert "torch" not in lines[tf].replace("torch.", "")  # transformers' line never pulls a torch
+    assert "accelerate" not in r.stdout and "accelerate" not in SCRIPT.read_text()
+
+
+def test_qwen_service_is_written_and_the_backend_waits_for_it(tmp_path):
+    r = run_with_engine(tmp_path, "qwen3-asr-gpu", kfd=110501)
+    assert r.returncode == 0, r.stderr
+    units = tmp_path / "home/.config/systemd/user"
+    assert f"would write: {units}/{QWEN_UNIT}" in r.stdout
+    assert f"systemctl --user enable {QWEN_UNIT}" in r.stdout and f"systemctl --user restart {QWEN_UNIT}" in r.stdout
+    body = SCRIPT.read_text().split('write "$QWEN_UNIT" 644 <<EOF\n', 1)[1].split("\nEOF\n", 1)[0]
+    assert "ExecStart=$QWEN_DIR/venv/bin/python $REPO/backend/qwen_asr_server.py $QWEN_MODEL" in body
+    assert "Restart=on-failure" in body and "WantedBy=default.target" in body
+    unit = render_unit(tmp_path, "", qwen="1")
+    assert f"Wants={QWEN_UNIT}" in unit and f"After={QWEN_UNIT}" in unit
+    assert "Description=voice-instinct backend\n\n[Service]" in render_unit(tmp_path, "")  # as before this engine
+    p = run_with_engine(tmp_path / "p", "parakeet")
+    assert p.returncode == 0, p.stderr
+    assert QWEN_UNIT not in p.stdout
+
+
+def test_switching_away_disables_the_qwen_service(tmp_path):
+    unit = tmp_path / "home/.config/systemd/user" / QWEN_UNIT
+    unit.parent.mkdir(parents=True)
+    unit.write_text("x")
+    (tmp_path / "home/.voice-instinct/qwen-asr").mkdir(parents=True)
+    r = run_with_engine(tmp_path, "parakeet")
+    assert r.returncode == 0, r.stderr
+    lines = r.stdout.splitlines()
+    rm = next(i for i, l in enumerate(lines) if l.startswith("would run: rm -f") and QWEN_UNIT in l)
+    assert f"disable --now {QWEN_UNIT}" in lines[rm - 1]
+    assert rm < lines.index("would run: systemctl --user daemon-reload")  # the reload forgets the removed unit
+    assert "about 10 GB" in r.stdout and "qwen-asr" in r.stdout
+
+
+def test_uninstall_removes_the_qwen_unit(tmp_path):
+    unit = tmp_path / "home/.config/systemd/user" / QWEN_UNIT
+    unit.parent.mkdir(parents=True)
+    unit.write_text("x")
+    (tmp_path / "home/.voice-instinct/qwen-asr").mkdir(parents=True)
+    r = run_with_engine(tmp_path, None, args=("--uninstall", "--dry-run"))
+    assert r.returncode == 0, r.stderr
+    assert f"disable --now {QWEN_UNIT}" in r.stdout
+    assert any(l.startswith("would run: rm -f") and str(unit) in l for l in r.stdout.splitlines())
+    assert "plus about 10 GB for the Qwen GPU engine" in r.stdout
+    assert "Qwen" not in run_with_engine(tmp_path / "n", None, args=("--uninstall", "--dry-run")).stdout
+
+
+def test_the_enrol_hint_is_shown_with_qwen(tmp_path):
+    r = run_with_engine(tmp_path, "qwen3-asr-gpu", kfd=110501)
+    assert r.returncode == 0, r.stderr
+    assert "uv run enroll.py" in r.stdout

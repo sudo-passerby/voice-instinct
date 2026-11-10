@@ -3,7 +3,10 @@ and the front-LLM builder."""
 
 import asyncio
 import functools
+import json
 import os
+import time
+import urllib.request
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
@@ -19,8 +22,9 @@ from pipecat.services.stt_service import SegmentedSTTService, STTService
 from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
 
+import qwen_asr_wire
 import whisper_text
-from config import checks_voice, is_whisper  # noqa: F401  (checks_voice: re-exported for callers and tests)
+from config import QWEN_ASR_PORT, checks_voice, is_whisper  # noqa: F401  (checks_voice: re-exported for callers and tests)
 
 PARAKEET_NAME = "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8"
 
@@ -262,6 +266,43 @@ class NemotronSTTService(STTService):
         await super().process_frame(frame, direction)
 
 
+class _QwenStream:
+    """Shaped like a sherpa-onnx offline stream: accept_waveform in, result.text out."""
+
+    def __init__(self):
+        self.audio, self.rate = np.zeros(0, np.float32), 16000
+        self.result = type("Result", (), {"text": ""})()
+
+    def accept_waveform(self, sample_rate, samples):
+        self.rate, self.audio = sample_rate, np.asarray(samples, np.float32)
+
+
+class QwenASRClient:
+    """Stands in for a sherpa-onnx offline recognizer, but asks the local Qwen3-ASR server (GPU, own venv)."""
+
+    def __init__(self, keyterms: list[str], port: int = QWEN_ASR_PORT, timeout: float = 15.0):
+        self.keyterms, self.port, self.timeout = keyterms, port, timeout
+        self._last_warned = float("-inf")
+
+    def create_stream(self):
+        return _QwenStream()
+
+    def decode_stream(self, stream):
+        try:
+            req = urllib.request.Request(f"http://127.0.0.1:{self.port}/transcribe",
+                                         data=qwen_asr_wire.encode(stream.audio, stream.rate, self.keyterms),
+                                         headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+                text = json.load(r)["text"]
+            stream.result.text = text if isinstance(text, str) else ""
+        except Exception as e:  # down, slow, 500, bad JSON: a missed sentence, never a crashed pipeline
+            stream.result.text = ""
+            if time.monotonic() - self._last_warned > 30:
+                self._last_warned = time.monotonic()
+                logger.warning(f"Qwen speech service on 127.0.0.1:{self.port} not answering ({e}): "
+                               "is voice-instinct-qwen.service running? (it takes about a minute to warm up)")
+
+
 # The official sherpa-onnx int8 builds; install.sh downloads the configured one (same names there).
 STT_MODELS = {
     "nemotron": "sherpa-onnx-nemotron-speech-streaming-en-0.6b-160ms-int8-2026-04-25",
@@ -270,6 +311,7 @@ STT_MODELS = {
     "whisper-tiny": "sherpa-onnx-whisper-tiny",
     "whisper-base": "sherpa-onnx-whisper-base",
     "whisper-small": "sherpa-onnx-whisper-small",
+    "qwen3-asr-gpu": "Qwen3-ASR-1.7B-hf",
 }
 
 
@@ -290,6 +332,10 @@ def make_stt(cfg, recognizer=None, voiceprint=None, enrolment=None, needs_check=
         return ParakeetSTTService(model_dir=d, recognizer=recognizer or _load_whisper_recognizer(d, size, cfg.stt_language),
                                   voiceprint=voiceprint, enrolment=enrolment, needs_check=needs_check,
                                   clean=whisper_text.clean, model_name=cfg.stt_engine)
+    if cfg.stt_engine == "qwen3-asr-gpu":  # no clean filter: Qwen doesn't invent text the way Whisper does
+        return ParakeetSTTService(model_dir=d, recognizer=recognizer or QwenASRClient(cfg.keyterms),
+                                  voiceprint=voiceprint, enrolment=enrolment, needs_check=needs_check,
+                                  model_name="qwen3-asr-1.7b")
     return NemotronSTTService(model_dir=d, recognizer=recognizer,
                               language=Language.EN if cfg.stt_engine == "nemotron" else None)
 

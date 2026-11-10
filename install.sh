@@ -37,6 +37,12 @@ MEMORY_UNIT="$HOME_DIR/.config/systemd/user/voice-instinct-memory.service"  # th
 MEMORY_TIMER="$HOME_DIR/.config/systemd/user/voice-instinct-memory.timer"
 AUTOSTART="$HOME_DIR/.config/autostart/voice-instinct.desktop"
 LAUNCHER="$HOME_DIR/.local/bin/voice-instinct"
+# engine qwen3-asr-gpu: Qwen3-ASR on the GPU, its own venv and service (backend/qwen_asr_server.py, port 7861)
+QWEN=""  # 1 when chosen
+QWEN_DIR="$HOME_DIR/.voice-instinct/qwen-asr"
+QWEN_MODEL="$MODELS/Qwen3-ASR-1.7B-hf"
+QWEN_UNIT="$HOME_DIR/.config/systemd/user/voice-instinct-qwen.service"
+QWEN_REV="bcd2b5b7f32b480ab5790554cfa8347f246a14f3"
 
 say() { printf '==> %s\n' "$*"; }
 run() { if [ "$DRY" = 1 ]; then printf 'would run: %s\n' "$*"; else "$@"; fi; }
@@ -91,7 +97,7 @@ node_install() {
 }
 
 models() {
-  if [ -f "$MODELS/$STT/tokens.txt" ] || [ -f "$MODELS/$STT/${STT#sherpa-onnx-whisper-}-tokens.txt" ]; then say "keep speech model $STT"; else
+  if [ -n "$QWEN" ]; then :; elif [ -f "$MODELS/$STT/tokens.txt" ] || [ -f "$MODELS/$STT/${STT#sherpa-onnx-whisper-}-tokens.txt" ]; then say "keep speech model $STT"; else
     fetch "$STT_URL" "$MODELS/$STT.tar.bz2" "$STT_SHA"
     run tar -xjf "$MODELS/$STT.tar.bz2" -C "$MODELS"
     run rm -f "$MODELS/$STT.tar.bz2"
@@ -130,9 +136,52 @@ stt_choice() {
       STT_SHA="911b2083efd7c0dca2ac3b358b75222660dc09fb716d64fbfc417ba6c99ff3de" ;;
     whisper-small) STT="sherpa-onnx-whisper-small"
       STT_SHA="486a46afbb7ba798507190ffe02fea2dd726049af212e774537efac6afb210a6" ;;
-    *) echo "config.toml: [stt] engine must be one of nemotron, nemotron-multilingual, parakeet, whisper-tiny, whisper-base, whisper-small (got '$engine')" >&2; exit 1 ;;
+    qwen3-asr-gpu) QWEN=1; STT="" ;;  # no sherpa archive: qwen_install sets up its venv and model
+    *) echo "config.toml: [stt] engine must be one of nemotron, nemotron-multilingual, parakeet, whisper-tiny, whisper-base, whisper-small, qwen3-asr-gpu (got '$engine')" >&2; exit 1 ;;
   esac
   STT_URL="$ASR_MODELS/$STT.tar.bz2"
+}
+
+# qwen_setup: the checks for qwen3-asr-gpu, before any package step: a supported GPU, then the disk
+qwen_setup() {
+  local gfx free d="$HOME_DIR/.voice-instinct"
+  # node 0 is the CPU (0); 110501 is gfx1151 (Strix Halo), the one AMD chip with a torch that works here
+  gfx="$(sed -n 's/^gfx_target_version \([1-9][0-9]*\)$/\1/p' "${VI_KFD_TOPOLOGY:-/sys/class/kfd/kfd/topology}"/nodes/*/properties 2>/dev/null || true)"
+  if printf '%s\n' "$gfx" | grep -qx 110501; then
+    TORCH_INDEX="https://rocm.nightlies.amd.com/v2/gfx1151/" TORCH_VER="2.10.0+rocm7.13.0a20260513"
+  elif command -v nvidia-smi >/dev/null; then
+    TORCH_INDEX="" TORCH_VER="2.10.0"  # PyPI's CUDA build
+  elif [ -n "$gfx" ]; then
+    gfx="$(printf '%s\n' "$gfx" | head -1)"
+    echo "qwen3-asr-gpu: your AMD GPU (gfx$((gfx / 10000))$(printf '%x%x' $((gfx / 100 % 100)) $((gfx % 100)))) is not supported yet (supported: AMD gfx1151, or NVIDIA). Pick another [stt] engine in config.toml." >&2; exit 1
+  else
+    echo "qwen3-asr-gpu needs a supported GPU (AMD gfx1151, or NVIDIA with nvidia-smi); none found. Pick another [stt] engine in config.toml." >&2; exit 1
+  fi
+  if [ -x "$QWEN_DIR/venv/bin/python" ] && [ -f "$QWEN_MODEL/config.json" ]; then return; fi
+  [ -e "$d" ] || d="$HOME_DIR"
+  free="${VI_FREE_GB:-$(df -Pk "$d" 2>/dev/null | awk 'NR==2 {print int($4 / 1048576)}' || true)}"  # tests override
+  case "$free" in ''|*[!0-9]*) echo "qwen3-asr-gpu: could not read the free disk space under $d (got '$free'); it needs at least 12 GB." >&2; exit 1 ;; esac
+  if [ "$free" -lt 12 ]; then
+    echo "qwen3-asr-gpu needs at least 12 GB free under $HOME_DIR/.voice-instinct (about 10 GB of PyTorch and model); $free GB is free." >&2; exit 1
+  fi
+}
+
+# qwen_install: the venv (torch installed last, from the GPU's index, so nothing swaps it), the check, the model
+qwen_install() {
+  local py="$QWEN_DIR/venv/bin/python" idx=()
+  [ -x "$py" ] || run "$UV" venv -p 3.12 "$QWEN_DIR/venv"  # AMD's wheels are cp310 to cp312 only
+  run "$UV" pip install --python "$py" transformers==5.22.1 soundfile numpy  # nothing that depends on torch: it would pull PyPI's
+  [ -n "$TORCH_INDEX" ] && idx=(--index-url "$TORCH_INDEX")
+  run "$UV" pip install --python "$py" "${idx[@]}" "torch==$TORCH_VER" "torchaudio==$TORCH_VER" \
+    || { echo "Could not install torch $TORCH_VER${TORCH_INDEX:+ from $TORCH_INDEX}; not falling back to another build." >&2; exit 1; }
+  # without HSA_OVERRIDE_GFX_VERSION (a workaround some set for older ROCm), as the server was measured; the unit unsets it too
+  run env -u HSA_OVERRIDE_GFX_VERSION "$py" -c "import torch; assert torch.version.hip or torch.version.cuda, 'torch ' + torch.__version__ + ' is not a GPU build'; assert torch.cuda.is_available(), 'torch cannot see the GPU'" \
+    || { echo "The Qwen engine's PyTorch cannot use the GPU (see above). Pick another [stt] engine in config.toml." >&2; exit 1; }
+  if [ -f "$QWEN_MODEL/config.json" ]; then say "keep speech model Qwen3-ASR-1.7B-hf"; return; fi
+  # into .part, renamed when complete: a re-run resumes, and the model dir only exists once it is whole
+  run "$py" -c "import sys; from huggingface_hub import snapshot_download; snapshot_download('Qwen/Qwen3-ASR-1.7B-hf', revision=sys.argv[1], local_dir=sys.argv[2])" "$QWEN_REV" "$QWEN_MODEL.part"
+  run rm -rf "$QWEN_MODEL"  # a leftover dir without config.json would swallow the mv
+  run mv "$QWEN_MODEL.part" "$QWEN_MODEL"
 }
 
 append_env() { # append_env <file> <key> <value>
@@ -172,9 +221,11 @@ sway_rule() {
 services() {
   local uvbin="$UV" CLAUDE_BIN
   CLAUDE_BIN="$(command -v claude || true)"  # the service's PATH may not reach it (npm-global, nvm)
+  local qwen_deps=""  # the backend unit waits for the Qwen service; other engines' units stay as they were
+  [ -n "$QWEN" ] && qwen_deps=$'\nWants=voice-instinct-qwen.service\nAfter=voice-instinct-qwen.service'
   write "$UNIT" 644 <<EOF
 [Unit]
-Description=voice-instinct backend
+Description=voice-instinct backend${qwen_deps}
 
 [Service]
 WorkingDirectory=$REPO/backend
@@ -214,6 +265,24 @@ Persistent=true
 [Install]
 WantedBy=timers.target
 EOF
+  if [ -n "$QWEN" ]; then
+    write "$QWEN_UNIT" 644 <<EOF
+[Unit]
+Description=voice-instinct speech-to-text on the GPU (Qwen3-ASR-1.7B, 127.0.0.1:7861)
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+ExecStart=$QWEN_DIR/venv/bin/python $REPO/backend/qwen_asr_server.py $QWEN_MODEL
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+UnsetEnvironment=HSA_OVERRIDE_GFX_VERSION
+
+[Install]
+WantedBy=default.target
+EOF
+  fi
   write "$LAUNCHER" 755 <<EOF
 #!/usr/bin/env bash
 # voice-instinct launcher: "voice-instinct" starts the orb, "voice-instinct toggle" shows or hides it,
@@ -232,7 +301,15 @@ Exec=$LAUNCHER
 X-GNOME-Autostart-enabled=true
 EOF
   if [ "$DRY" = 1 ] || systemctl --user show-environment >/dev/null 2>&1; then
+    if [ -z "$QWEN" ] && [ -f "$QWEN_UNIT" ]; then  # switched away from qwen3-asr-gpu; removed before the reload
+      run systemctl --user disable --now voice-instinct-qwen.service
+      run rm -f "$QWEN_UNIT"
+    fi
     run systemctl --user daemon-reload
+    if [ -n "$QWEN" ]; then
+      run systemctl --user enable voice-instinct-qwen.service
+      run systemctl --user restart voice-instinct-qwen.service  # about a minute of warm-up before it answers
+    fi
     run systemctl --user enable voice-instinct.service
     run systemctl --user restart voice-instinct.service  # re-run = update: pick up new code
     run systemctl --user enable --now voice-instinct-memory.timer
@@ -253,22 +330,32 @@ uninstall() {
   fi
   if [ "$DRY" = 1 ]; then run systemctl --user disable --now voice-instinct.service voice-instinct-memory.timer
   else systemctl --user disable --now voice-instinct.service voice-instinct-memory.timer 2>/dev/null || true; fi
-  run rm -f "$UNIT" "$MEMORY_UNIT" "$MEMORY_TIMER" "$AUTOSTART" "$LAUNCHER"
+  if [ -f "$QWEN_UNIT" ]; then  # its own call: disabling a unit that doesn't exist fails the whole call
+    if [ "$DRY" = 1 ]; then run systemctl --user disable --now voice-instinct-qwen.service
+    else systemctl --user disable --now voice-instinct-qwen.service 2>/dev/null || true; fi
+  fi
+  run rm -f "$UNIT" "$MEMORY_UNIT" "$MEMORY_TIMER" "$QWEN_UNIT" "$AUTOSTART" "$LAUNCHER"
   if [ "$DRY" = 1 ]; then run systemctl --user daemon-reload
   else systemctl --user daemon-reload 2>/dev/null || true; fi
   if [ "$PURGE" = 1 ]; then say "remove data in $HOME_DIR/.voice-instinct (models, database, workspace)"; run rm -rf "$HOME_DIR/.voice-instinct"; fi
-  say "voice-instinct removed$([ "$PURGE" = 1 ] || echo '; ~/.voice-instinct is kept: your data, plus about 2 GB of models, Node and the errand browser (--purge deletes it)')"
+  local qwen=""; [ -d "$QWEN_DIR" ] && qwen=", plus about 10 GB for the Qwen GPU engine"
+  say "voice-instinct removed$([ "$PURGE" = 1 ] || echo "; ~/.voice-instinct is kept: your data, plus about 2 GB of models, Node and the errand browser$qwen (--purge deletes it)")"
 }
 
 if [ "$UNINSTALL" = 1 ]; then uninstall; exit 0; fi
 
 if [ -z "$NODE_ARCH" ]; then echo "unsupported CPU: $(uname -m) (supported: x86_64, aarch64)" >&2; exit 1; fi
 stt_choice  # an unknown engine stops here, before any package or download step
+if [ -n "$QWEN" ]; then qwen_setup; fi  # so does qwen3-asr-gpu without a supported GPU or the disk space
 distro_install
 node_install
 command -v uv >/dev/null || run sh -c "curl -LsSf https://astral.sh/uv/install.sh | sh"
 UV="$(command -v uv || echo "$HOME_DIR/.local/bin/uv")"  # the fresh install is not on PATH yet
 models
+if [ -n "$QWEN" ]; then qwen_install
+elif [ -d "$QWEN_DIR" ] || [ -d "$QWEN_MODEL" ] || [ -d "$QWEN_MODEL.part" ]; then
+  say "The Qwen GPU engine is no longer used; to free about 10 GB: rm -rf $QWEN_DIR $QWEN_MODEL $QWEN_MODEL.part"
+fi
 config_and_key
 run sh -c "cd '$REPO/backend' && $UV sync --python 3.13"
 # npm 12 blocks install scripts, so fetch the Electron binary explicitly (harmless where npm already did)
@@ -307,6 +394,6 @@ if [ -n "${WAYLAND_DISPLAY:-}${DISPLAY:-}" ]; then
 else
   say "Done. Start the orb with $LAUNCHER (it starts by itself from your next login), then say \"${name:-Nova}\"."
 fi
-case "$(cfgval engine)" in parakeet|whisper-*)  # the voice check needs Parakeet or Whisper (#32)
+case "$(cfgval engine)" in parakeet|whisper-*|qwen3-asr-gpu)  # the voice check needs Parakeet, Whisper or Qwen (#32)
   say "To make only your voice wake it (one minute, with the orb open): cd $REPO/backend && uv run enroll.py" ;;
 esac

@@ -12,6 +12,7 @@ Not affiliated with Instinct.
   and speaks, then hides again.
 - You just talk to it. Speech-to-text (Nemotron streaming, Parakeet or Whisper) and text-to-speech (Kokoro) run locally,
   around a model of your choice: Gemini by default, or any OpenAI-compatible endpoint or Ollama.
+- Optional, with a supported GPU: `qwen3-asr-gpu` (Qwen3-ASR-1.7B) is the most accurate English speech-to-text and gets names you list right, at about 10 GB of disk, about 7.5 GB of RAM while running and about 0.45 s per command (see `[stt]` in `config.example.toml`).
 - It hands errands to your own logged-in `claude` CLI as a tracked background task, runs it
   autonomously in a sandbox, and tells you the result.
 - When the task needs a go-ahead or an answer, it asks you aloud and carries on in the same run.
@@ -63,7 +64,7 @@ Built on [Pipecat](https://docs.pipecat.ai).
   phrase: other people saying "Nova" are ignored, and once you've woken it, it listens to the conversation
   until it sleeps. The voiceprint stays in `~/.voice-instinct/`, and `uv run enroll.py --delete` removes it.
   If it misses you, lower `[voice] threshold` in `config.toml` (default 0.6); if others get through, raise
-  it. It needs the Parakeet engine. Say "stop" to send it away; running errands carry on.
+  it. It needs the Parakeet, a Whisper or the qwen3-asr-gpu engine. Say "stop" to send it away; running errands carry on.
 - Errands can read your memory but never change it, and never see the raw journal of your conversations.
   The nightly memory run has no network and no web tools, and learns only what you said, never what a
   web page said. Journals are deleted after 7 days; `./install.sh --uninstall --purge` deletes all memory.

@@ -10,6 +10,8 @@
   0.5 GB, and a running errand (Claude Code and its browser) about 1 GB more.
 - **Disk:** about 3.5 GB free. The installer downloads about 2 GB: speech models (~1 GB; Whisper is 0.1 to 0.6 GB), Node.js
   (~0.2 GB), the errand browser (~0.7 GB), plus the Python and Node packages.
+- **Optional GPU engine:** the `qwen3-asr-gpu` speech engine needs an AMD gfx1151 GPU (Ryzen AI Max, e.g.
+  the Radeon 8060S) or an NVIDIA GPU, and about 10 GB more disk (the installer wants 12 GB free) and about 7.5 GB of RAM while it runs.
 - **Microphone and speakers** (or a headset).
 
 ## Desktop
