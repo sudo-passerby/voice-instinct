@@ -266,6 +266,7 @@ class QwenASRClient:
     def __init__(self, keyterms: list[str], port: int = QWEN_ASR_PORT, timeout: float = 15.0):
         self.keyterms, self.port, self.timeout = keyterms, port, timeout
         self._last_warned = float("-inf")
+        self._open = urllib.request.build_opener(urllib.request.ProxyHandler({})).open  # local: never a proxy
 
     def create_stream(self):
         return _QwenStream()
@@ -282,7 +283,7 @@ class QwenASRClient:
             req = urllib.request.Request(f"http://127.0.0.1:{self.port}/transcribe",
                                          data=qwen_asr_wire.encode(stream.audio, stream.rate, self.keyterms),
                                          headers={"Content-Type": "application/json"})
-            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+            with self._open(req, timeout=self.timeout) as r:
                 text = json.load(r)["text"]
             stream.result.text = text if isinstance(text, str) and not self._echoes_keyterms(text) else ""
         except Exception as e:  # down, slow, 500, bad JSON: a missed sentence, never a crashed pipeline
