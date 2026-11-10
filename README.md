@@ -84,16 +84,33 @@ nor change that file.
   and the front model's API key is removed from the agent's environment.
 - The agent browses in its own headless browser that starts empty for every errand and is never
   signed in to your accounts. It gets none of your other Claude Code tools or connectors.
-- When Claude Code asks for permission, your yes or no is decided by code from your own words, never
-  by the model, and only after it actually asked you. Clicks and form entries in the errand browser
-  are not asked one by one: Claude Code's auto-mode safety checks approve or refuse them, and the
-  browser's tools that could run code or upload your files are turned off. A click, form fill, key
-  press, dropdown choice or submitted text whose button, fields or page has one of these whole words is
-  always asked first: pay, payment, buy, purchase, complete purchase, order, checkout, check out,
-  subscribe, subscription, trial, upgrade, renew, confirm, confirm booking, book, booking, book now,
-  complete booking, reserve, reservation, request ride, get tickets, donate, bid, place bid. "Add to
-  cart", "reorder" and "bookmark" don't count. If that check fails, the step is refused.
-- It is instructed never to buy, pay, book or cancel without your explicit go-ahead.
+- Nova never pays. Errands are told never to complete a payment, place a paid order or confirm a paid
+  booking: at the payment step the errand stops and reports the page link, what it chose and the total, and
+  Nova tells you it's ready for you to finish and offers to send the link to your Telegram. The errand
+  browser is a fresh profile, so your own browser won't have its cart: you get the product or page link and
+  the choices to pick again. Behind that instruction:
+  - The errand browser has no logins and no saved cards or addresses (a fresh, empty profile every errand).
+  - It cannot reach the main payment gateways and hosted checkouts: Razorpay, PayU, Paytm's gateway,
+    CCAvenue, BillDesk, Juspay, Cashfree, PhonePe, Easebuzz, Instamojo, Stripe, PayPal, Adyen, Braintree,
+    Checkout.com, Worldpay, Google Pay and Amazon Pay (the list is `PAYMENT_HOSTS` in `backend/autonomy.py`).
+    Their hosts are blocked by the browser itself, so a redirect doesn't get through either.
+  - Nova never takes card or UPI details: an errand whose task holds a card number, a CVV, a UPI PIN, an OTP
+    or a netbanking password is refused before it starts.
+  - This does not cover a merchant's own in-house payment page, a gateway not on the list, or cash on
+    delivery, where nothing has to be paid online. That is why the errand stops at checkout, and why the
+    check below asks.
+- Nova also asks before free bookings and similar steps. A click, form fill, key press, dropdown choice,
+  drag or submitted text whose button (with its icon and text), fields or page has one of these whole words
+  is asked first: pay, payment, buy, purchase, complete purchase, order, checkout, check out, subscribe,
+  subscription, trial, upgrade, renew, confirm, confirm booking, book, booking, book now, complete booking,
+  reserve, reservation, request ride, get tickets, donate, bid, place bid. "Add to cart", "reorder" and
+  "bookmark" don't count. A step on an element the check can't see on the page is refused until the errand
+  looks at the page again. This check catches mistakes, not a determined malicious page: a page can word or
+  build a button so that it doesn't look like one of these. Other clicks are not asked one by one: Claude
+  Code's auto-mode safety checks approve or refuse them, and the browser's tools that could run code or
+  upload your files are turned off.
+- When Claude Code asks for permission, or Nova asks before a step, your yes or no is decided by code from
+  your own words, never by the model, and only after it actually asked you.
 - Only the orb app is meant to open a voice session: a web page, including one an errand visits, is
   refused, and so is a program that sends no Origin header. A program on your computer that fakes the
   orb's Origin header is not stopped. Set `VI_ALLOW_PLAYGROUND=1` before starting the backend to use
