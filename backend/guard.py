@@ -1,5 +1,8 @@
 """Only this app's own orb may talk to the backend from a browser, over HTTP or a WebSocket.
 
+What it stops: web pages (any origin but ORB_ORIGIN) and callers that send no Origin (except on /hook/). What it
+does not stop: a local program that forges the orb's Origin header, which any non-browser client can set.
+
 The runner allows every origin (CORS "*"), so any web page open on this machine, including one the
 errand browser visits, could otherwise open a voice session and answer its own permission question.
 The orb's main process stamps its requests with ORB_ORIGIN (frontend/main.js). Page scripts cannot

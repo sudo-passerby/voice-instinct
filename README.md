@@ -94,8 +94,9 @@ nor change that file.
   complete booking, reserve, reservation, request ride, get tickets, donate, bid, place bid. "Add to
   cart", "reorder" and "bookmark" don't count. If that check fails, the step is refused.
 - It is instructed never to buy, pay, book or cancel without your explicit go-ahead.
-- Only the orb app can open a voice session: a web page, including one an errand visits, or another
-  program on your computer is refused. Set `VI_ALLOW_PLAYGROUND=1` before starting the backend to use
+- Only the orb app is meant to open a voice session: a web page, including one an errand visits, is
+  refused, and so is a program that sends no Origin header. A program on your computer that fakes the
+  orb's Origin header is not stopped. Set `VI_ALLOW_PLAYGROUND=1` before starting the backend to use
   its `/client` test page in a browser.
 - The microphone stays open so it can hear the wake phrase. What it hears is transcribed on your
   machine and thrown away until you say the phrase; it is not stored or sent anywhere.

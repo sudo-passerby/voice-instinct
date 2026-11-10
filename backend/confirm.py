@@ -90,8 +90,8 @@ def grant_answer(reply: str, names=()) -> str:
 
 def standing_answer(reply: str, names=()) -> str:
     """The answer to allow_folder's question, which already asks for always: "always" only when the user says
-    always (or the like) or gives a bare yes of up to three words; any other yes ("yes one time", "haan ek baar",
-    "ok for now") is "once", which saves nothing."""
+    always (or the like) or gives a bare yes of up to three words; any other yes ("yes one time", "haan ek baar")
+    is "once", which saves nothing. "ok for now" is "unclear" (asked again)."""
     verdict, bare = _grant(reply, names)
     return "always" if verdict == "always" or (verdict == "once" and bare) else verdict
 
