@@ -133,3 +133,20 @@ def test_real_speech_with_key_terms_is_kept(said):
         assert _transcribe(services.QwenASRClient(TERMS, port=srv.server_port), np.zeros(1600, np.float32)) == said
     finally:
         srv.shutdown()
+
+
+def test_a_proxy_in_the_environment_is_never_used(monkeypatch):
+    # The server is on this machine: a desktop's http_proxy must not swallow every sentence.
+    import urllib.request
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        dead = s.getsockname()[1]
+    for k in ("no_proxy", "NO_PROXY"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("http_proxy", f"http://127.0.0.1:{dead}")
+    monkeypatch.setattr(urllib.request, "_opener", None)  # urlopen's cached opener read the env earlier
+    srv = _serve(lambda p, b: (200, {"text": "Nova, hi."}))
+    try:
+        assert _transcribe(services.QwenASRClient(["Nova"], port=srv.server_port), np.zeros(1600, np.float32)) == "Nova, hi."
+    finally:
+        srv.shutdown()

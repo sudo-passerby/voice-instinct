@@ -37,14 +37,13 @@ from pipecat.runner.run import app
 from pipecat.turns.user_turn_strategies import UserTurnStrategies, default_user_turn_start_strategies
 from pipecat.runner.types import RunnerArguments
 from pipecat.runner.utils import create_transport
-from pipecat.services.kokoro.tts import KokoroTTSService
 from pipecat.transports.base_transport import TransportParams
 from pipecat.utils.text.markdown_text_filter import MarkdownTextFilter
 from pipecat.workers.runner import WorkerRunner
 from registry import Registry
 from reminders import Reminders, make_reminder_tools
 from relay import Relay, make_bridge_tools, start_session
-from services import build_llm, kokoro_paths, make_stt
+from services import build_llm, make_stt, make_tts
 from shutdown import cancel_on_exit
 from steps import StepHub
 from telegram import Telegram
@@ -199,12 +198,7 @@ async def bot(runner_args: RunnerArguments):
                  *make_folder_tools(FOLDERS, bridge, registry, Path.home())]
     else:
         logger.warning("claude CLI not found; running front-model-only")
-    model_path, voices_path = kokoro_paths(cfg)
-    tts = KokoroTTSService(
-        model_path=str(model_path),
-        voices_path=str(voices_path),
-        settings=KokoroTTSService.Settings(voice="af_heart"),
-    )
+    tts = await make_tts(cfg)  # voice af_heart; the model is loaded once per process, off the event loop
     # Documented TTS text transformer: never read markdown aloud (Claude's results arrive as tables).
     markdown = MarkdownTextFilter()
     tts.add_text_transformer(lambda text, _type: markdown.filter(text), "*")

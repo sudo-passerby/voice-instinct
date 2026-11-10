@@ -1,5 +1,6 @@
 """Settings for both halves, read from config.toml at the repo root (sectioned; flat keys still work)."""
 
+import re
 import tomllib
 from dataclasses import dataclass, field, fields
 from pathlib import Path
@@ -69,8 +70,11 @@ class Config:
     def wake_phrases(self) -> list[str]:
         """Only the name itself, wherever it is said ("Nova, what's on?", "hey nova"). The merged spellings Parakeet
         wrote for a quick "Hey Nova" ("Inova", "Anova") and Whisper's "no va" were dropped on 2026-11-10: Qwen writes
-        "Nova", and the owner wants only the name to wake it."""
-        return [" ".join(self.name.lower().split())]
+        "Nova", and the owner wants only the name to wake it.
+        Pipecat strips punctuation from what was heard before matching, so the phrase drops it too ("Nova!" -> "nova").
+        Punctuation inside a name becomes a space: Pipecat joins the phrase's words with \\s*, so "Mary-Jane" ->
+        "mary jane" matches both "Mary-Jane" (heard as "MaryJane") and "Mary Jane"."""
+        return [" ".join(re.sub(r"[^\w\s]", " ", self.name.lower()).split())]
 
 
 def load(path=None) -> Config:
@@ -86,12 +90,18 @@ def load(path=None) -> Config:
     if not isinstance(cfg.name, str) or not cfg.name.strip():
         raise ValueError("config.toml: [assistant] name must be non-empty text")
     cfg.name = cfg.name.strip()
+    if not cfg.wake_phrases[0]:
+        raise ValueError("config.toml: [assistant] name needs at least one letter or digit (it is the wake word)")
     if isinstance(cfg.gui_size, bool) or not isinstance(cfg.gui_size, int) or not 48 <= cfg.gui_size <= 1024:
         raise ValueError("config.toml: [gui] size must be a whole number of pixels from 48 to 1024")
     if isinstance(cfg.awake_timeout, bool) or not isinstance(cfg.awake_timeout, (int, float)) or cfg.awake_timeout <= 0:
         raise ValueError("config.toml: [assistant] awake_timeout must be a number of seconds above 0")
     if cfg.provider not in ("gemini", "openai", "ollama"):
         raise ValueError("config.toml: [model] provider must be gemini, openai or ollama")
+    for key in ("backend_timeout", "permission_timeout"):
+        v = getattr(cfg, key)
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            raise ValueError(f"config.toml: [agent] {key} must be a number of seconds")
     if not 0 < cfg.permission_timeout < cfg.backend_timeout:
         raise ValueError("config.toml: [agent] permission_timeout must be above 0 and below backend_timeout")
     if cfg.gui_position not in POSITIONS:

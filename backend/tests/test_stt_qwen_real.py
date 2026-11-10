@@ -1,5 +1,5 @@
 """qwen3-asr-gpu through the real server (run with -m claude): the bake-off's 12 far-field rare-term lines, sent
-through make_stt -> ParakeetSTTService -> QwenASRClient -> the server, so normalisation is included. Every term
+through make_stt -> ParakeetSTTService -> QwenASRClient -> the server, the same path the bot uses. Every term
 must be heard, at a median of at most 0.75 s per line. Skipped unless voice-instinct-qwen.service answers."""
 
 import asyncio

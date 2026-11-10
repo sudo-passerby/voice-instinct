@@ -10,4 +10,4 @@ def test_gui_config_serves_what_the_orb_needs_from_config():
     app.include_router(make_gui_router(Config(name="Juno", gui_size=200, gui_position="top-left", awake_timeout=12)))
     r = TestClient(app).get("/gui-config")
     assert r.status_code == 200
-    assert r.json() == {"name": "Juno", "size": 200, "position": "top-left", "awake_timeout": 12}
+    assert r.json() == {"size": 200, "position": "top-left"}  # all the orb reads (main.js placement)

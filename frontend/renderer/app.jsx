@@ -1,5 +1,5 @@
 // Renderer: a Pipecat JS client over SmallWebRTC (documented path) driving the orb.
-import { PipecatClient, RTVIEvent } from "@pipecat-ai/client-js";
+import { LogLevel, PipecatClient, RTVIEvent, logger } from "@pipecat-ai/client-js";
 import { SmallWebRTCTransport, WavMediaManager } from "@pipecat-ai/small-webrtc-transport";
 import { createRoot } from "react-dom/client";
 import { Orb } from "orb-ui";
@@ -24,6 +24,8 @@ function dispatch(type) {
   if (line !== lastLine) window.vi.setStatus((lastLine = line)); // a rebuilt tray menu closes if open
 }
 
+// Shared by client-js and the transport; its default is DEBUG, which logs the bot's messages, replies included.
+logger.setLevel(LogLevel.WARN);
 const client = new PipecatClient({ transport: new SmallWebRTCTransport({ mediaManager: new WavMediaManager() }), enableMic: true, enableCam: false });
 client.on(RTVIEvent.Connected, () => { backendUp = false; dispatch("connected"); if (client.isMicEnabled !== !muted) client.enableMic(!muted); });
 client.on(RTVIEvent.BotReady, () => { if (state.visible) client.sendClientMessage("wake"); }); // shown before it connected

@@ -186,3 +186,20 @@ def test_keyterms_must_be_a_short_list_of_short_strings(tmp_path):
 def test_the_qwen_port_is_fixed():
     from config import QWEN_ASR_PORT
     assert QWEN_ASR_PORT == 7861
+
+
+def test_a_name_with_no_letters_or_digits_fails_fast(tmp_path):
+    f = tmp_path / "c.toml"
+    f.write_text('[assistant]\nname = "!?."\n')
+    with pytest.raises(ValueError, match="name.*letter"):
+        load(f)
+
+
+@pytest.mark.parametrize("body,key", [('[agent]\nbackend_timeout = "300"', "backend_timeout"),
+                                      ('[agent]\npermission_timeout = "90"', "permission_timeout"),
+                                      ("[agent]\npermission_timeout = true", "permission_timeout")])
+def test_agent_timeouts_that_are_not_numbers_fail_fast_with_a_clear_message(tmp_path, body, key):
+    f = tmp_path / "c.toml"
+    f.write_text(body)
+    with pytest.raises(ValueError, match=rf"config.toml: \[agent\] {key} must be a number of seconds"):
+        load(f)
