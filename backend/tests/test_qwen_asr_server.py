@@ -35,3 +35,12 @@ def test_messages_put_the_terms_in_the_system_message():
 
 def test_the_server_module_imports_without_torch():
     importlib.import_module("qwen_asr_server")
+
+
+def test_a_body_over_4_mb_is_refused_before_it_is_read():
+    from qwen_asr_server import MAX_BODY, body_fits
+    assert MAX_BODY == 4 * 1024 * 1024
+    assert body_fits("0") and body_fits(str(MAX_BODY))
+    assert not body_fits(str(MAX_BODY + 1)) and not body_fits("-1")
+    # a 20 s segment, the longest the client sends, fits easily
+    assert body_fits(str(len(qwen_asr_wire.encode(np.zeros(16000 * 20, np.float32), 16000, ["Nova"] * 50))))

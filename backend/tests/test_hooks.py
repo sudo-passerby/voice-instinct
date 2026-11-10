@@ -3,6 +3,8 @@ import json
 import stat
 from pathlib import Path
 
+import pytest
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -194,6 +196,10 @@ def test_settings_file_is_private_and_access_log_hides_tokens(tmp_path):
     # Hook calls stay in the log (a refused hook must be visible) with the token blanked out.
     assert hide_hook_tokens(hook_line) is True and hide_hook_tokens(other) is True
     assert "sekret" not in hook_line.getMessage() and "/hook/…/Stop" in hook_line.getMessage() and "403" in hook_line.getMessage()
+    for path in ("/hook/sekret", "/hook/sekret?x=1"):  # a probe with no event after the token
+        bare = logging.LogRecord("uvicorn.access", 20, "", 0, fmt, ("127.0.0.1:1", "POST", path, "1.1", 404), None)
+        hide_hook_tokens(bare)
+        assert "sekret" not in bare.getMessage() and "/hook/…" in bare.getMessage()
 
 
 def test_a_timeout_tells_the_relay_the_question_expired_but_an_answer_does_not():
@@ -244,3 +250,253 @@ def test_every_run_gets_the_step_hook_for_the_time_budget(tmp_path):
 def test_the_step_hook_sees_every_tool_the_agent_uses():
     # An errand researched with WebSearch alone recorded "0 steps" when only browser tools were hooked.
     assert STEP_MATCHER == "*"  # Claude Code's matcher for every tool
+
+
+def _click(element, target="e12", sid="s1", tool="mcp__browser__browser_click", **inp):
+    """Playwright MCP 0.0.83's shape (install.sh pins it): the element is named by `target`, a snapshot ref."""
+    return {"session_id": sid, "cwd": "/w", "hook_event_name": "PreToolUse", "tool_name": tool,
+            "tool_input": {"element": element, "target": target, **inp} if element else {"target": target, **inp}}
+
+
+def _answer(b, reg, payload, decision):
+    async def go():
+        t = asyncio.create_task(b.on_pre_tool_use(payload))
+        for _ in range(5):
+            await asyncio.sleep(0)
+        qs = reg.open_questions()
+        if qs and decision:
+            b.resolve(qs[0]["id"], decision)
+        return await asyncio.wait_for(t, 1), qs
+
+    return asyncio.run(go())
+
+
+@pytest.mark.parametrize("element", ["Pay now", "Make payment", "Buy now", "Purchase", "Place order", "Checkout",
+                                     "Check out", "Subscribe", "Start subscription", "Confirm booking", "Book now",
+                                     "Reserve a table", "Confirm", "Donate", "Bid", "Place bid",
+                                     "Book", "Book table", "Book ride", "Complete booking", "Complete reservation",
+                                     "Start free trial", "Upgrade", "Request ride", "Get tickets",
+                                     "Complete purchase", "Renew", "Make a reservation"])
+def test_a_purchase_like_click_always_asks_the_user_first(element):
+    # Auto mode's classifier approves clicks on its own; anything that may spend money goes to the user.
+    b, reg, relay = make()
+    out, qs = _answer(b, reg, _click(element), "allow")
+    assert len(qs) == 1 and relay.raised == [qs[0]["id"]]
+    assert out["hookSpecificOutput"] == {"hookEventName": "PreToolUse", "permissionDecision": "allow"}
+
+
+@pytest.mark.parametrize("url", ["https://secure.booking.com/book.html", "https://www.opentable.com/booking/details"])
+def test_a_booking_page_gates_even_a_harmless_click(url):
+    b, reg, _ = make()
+    b.note_page({"session_id": "s1", "tool_name": "mcp__browser__browser_navigate",
+                 "tool_response": f"- Page URL: {url}\n"})
+    out, qs = _answer(b, reg, _click("Continue"), "allow")
+    assert len(qs) == 1 and url in qs[0]["prompt"]
+
+
+def test_a_no_or_no_answer_blocks_the_purchase():
+    b, reg, _ = make(timeout=0.05)
+    out, _ = _answer(b, reg, _click("Place order"), "deny")
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+    out, _ = _answer(b, reg, _click("Pay now", target="e13"), None)  # times out
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_an_ordinary_click_is_left_to_claude_code():
+    b, reg, relay = make()
+    for el in ("Search", "Next page", "Sort by price", "Facebook", "Bookmarks", "Bookmark this page",
+               "Add to cart", "Reorder", "Tickets FAQ", "Facebook login"):
+        out, qs = _answer(b, reg, _click(el), None)
+        assert out == {} and qs == [], el
+    assert relay.raised == []
+
+
+def test_the_question_names_the_real_target_and_the_page():
+    b, reg, _ = make()
+    b.note_page({"session_id": "s1", "tool_name": "mcp__browser__browser_navigate",
+                 "tool_response": [{"type": "text", "text": "- Page URL: https://shop.example/checkout\n"}]})
+    out, qs = _answer(b, reg, _click("Continue", target="e42"), "allow")  # harmless words, but a checkout page
+    assert qs[0]["prompt"] == "browser_click: Continue (ref e42) on https://shop.example/checkout"
+
+
+SNAPSHOT = """- Page URL: https://shop.example/cart
+- Page Title: Cart
+### Snapshot
+```yaml
+- generic [ref=e2]:
+  - heading "Your cart" [level=1] [ref=e3]
+  - button "Continue shopping" [ref=e41] [cursor=pointer]
+  - button "Pay ₹5000" [ref=e42] [cursor=pointer]
+```
+"""
+
+
+def test_a_click_is_judged_by_the_snapshots_real_name_not_the_agents_description():
+    # The agent writes `element` itself: "Continue" on a ref that is really the "Pay ₹5000" button.
+    b, reg, _ = make()
+    b.note_page({"session_id": "s1", "tool_name": "mcp__browser__browser_snapshot",
+                 "tool_response": [{"type": "text", "text": SNAPSHOT}]})
+    out, qs = _answer(b, reg, _click("Continue", target="e42"), "deny")
+    assert len(qs) == 1 and out["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert 'button "Pay ₹5000"' in qs[0]["prompt"] and "e42" in qs[0]["prompt"]
+    # The real "Continue shopping" button on the same page is left alone.
+    assert _answer(b, reg, _click("Continue", target="e41"), None) == ({}, [])
+
+
+SNAP_FILE = "./.playwright-mcp/page-2026-11-10T12-00-00-000Z.yml"
+# A page-changing step's response in 0.0.83: the snapshot is written to a file and only linked.
+LINKED = f"""### Ran Playwright code
+```js
+await page.getByRole('link', {{ name: 'Cart' }}).click();
+```
+### Page
+- Page URL: https://shop.example/cart
+- Page Title: Cart
+### Snapshot
+- [Snapshot]({SNAP_FILE})"""
+
+
+def test_a_snapshot_linked_as_a_file_is_read_when_the_step_is_judged(tmp_path):
+    b, reg, _ = make()
+    b.note_page({"session_id": "s1", "cwd": str(tmp_path), "tool_name": "mcp__browser__browser_click",
+                 "tool_response": [{"type": "text", "text": LINKED}]})
+    f = tmp_path / SNAP_FILE
+    f.parent.mkdir()
+    f.write_text(SNAPSHOT.split("```yaml\n")[1].split("```")[0])  # read at PreToolUse time, not when linked
+    out, qs = _answer(b, reg, _click("Continue", target="e42"), "deny")
+    assert len(qs) == 1 and 'button "Pay ₹5000"' in qs[0]["prompt"]
+
+
+def test_a_linked_file_outside_the_errands_folder_is_never_read(tmp_path):
+    b, _, _ = make()
+    (tmp_path / "w").mkdir()
+    (tmp_path / "x.yml").write_text('- button "Pay" [ref=e42]')
+    b.note_page({"session_id": "s1", "cwd": str(tmp_path / "w"), "tool_name": "mcp__browser__browser_click",
+                 "tool_response": "- Page URL: https://a.example/\n- [Snapshot](../x.yml)"})
+    assert b._snapshot_text("s1") == ""
+
+
+def test_a_ref_inside_a_name_or_text_is_never_taken_for_the_nodes_own():
+    # Page text can say "[ref=e42]": only the line whose own attributes hold it is e42.
+    b, reg, _ = make()
+    spoof = """### Snapshot
+```yaml
+- paragraph [ref=e40]: Continue [ref=e42] to the next step
+- link "Say \\"hi\\" [ref=e42]" [ref=e41] [cursor=pointer]
+- button "Pay ₹5000" [ref=e42] [cursor=pointer]
+```"""
+    b.note_page({"session_id": "s1", "tool_name": "mcp__browser__browser_snapshot", "tool_response": spoof})
+    out, qs = _answer(b, reg, _click("Continue", target="e42"), "deny")
+    assert len(qs) == 1 and 'button "Pay ₹5000"' in qs[0]["prompt"] and "paragraph" not in qs[0]["prompt"]
+
+
+def test_a_new_page_without_a_snapshot_forgets_the_old_one():
+    b, reg, _ = make()
+    b.note_page({"session_id": "s1", "tool_name": "mcp__browser__browser_snapshot", "tool_response": SNAPSHOT})
+    b.note_page({"session_id": "s1", "tool_name": "mcp__browser__browser_navigate_back",
+                 "tool_response": "### Page\n- Page URL: https://news.example/\n- Page Title: News"})
+    assert _answer(b, reg, _click("Continue", target="e42"), None) == ({}, [])  # the old page's Pay is gone
+
+
+def test_a_selector_target_is_judged_by_its_own_words_and_the_old_ref_key_still_works():
+    b, reg, _ = make()
+    out, qs = _answer(b, reg, _click("Continue", target="text=Pay now"), "deny")
+    assert len(qs) == 1 and "text=Pay now" in qs[0]["prompt"]
+    b.note_page({"session_id": "s1", "tool_name": "mcp__browser__browser_snapshot", "tool_response": SNAPSHOT})
+    old = {"session_id": "s1", "cwd": "/w", "tool_name": "mcp__browser__browser_click",
+           "tool_input": {"element": "Continue", "ref": "e42"}}
+    out, qs = _answer(b, reg, old, "deny")
+    assert len(qs) == 1 and 'button "Pay ₹5000"' in qs[0]["prompt"]
+
+
+def test_the_kept_snapshot_is_bounded():
+    b, _, _ = make()
+    b.note_page({"session_id": "s1", "tool_name": "mcp__browser__browser_snapshot",
+                 "tool_response": "- button \"x\" [ref=e1]\n" + "a" * 1_000_000})
+    assert len(b._snapshots["s1"]) <= 200_000
+
+
+def test_form_fills_and_key_presses_are_gated_too():
+    b, reg, _ = make()
+    fill = _click(None, tool="mcp__browser__browser_fill_form",
+                  fields=[{"name": "Card number", "target": "e3", "value": "4111"}, {"name": "Pay", "target": "e4"}])
+    out, qs = _answer(b, reg, fill, "allow")
+    assert len(qs) == 1 and "4111" not in qs[0]["prompt"]  # field names, never their values
+    b.note_page({"session_id": "s2", "tool_name": "mcp__browser__browser_click",
+                 "tool_response": "- Page URL: https://shop.example/order/review"})
+    out, qs = _answer(b, reg, _click(None, sid="s2", tool="mcp__browser__browser_press_key", key="Enter"), "deny")
+    assert len(qs) == 1 and out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_every_run_gates_purchase_steps_through_the_pre_tool_hook(tmp_path):
+    import re
+    from hooks import PRE_TOOL_MATCHER
+    hooks = json.loads(Path(write_run_settings(tmp_path, "a", "tok", 7860, hook_timeout=100)).read_text())["hooks"]
+    (entry,) = hooks["PreToolUse"]
+    assert entry["hooks"][0]["url"].endswith("/hook/tok/PreToolUse") and entry["hooks"][0]["timeout"] == 100
+    for tool in ("mcp__browser__browser_click", "mcp__browser__browser_fill_form", "mcp__browser__browser_press_key",
+                 "mcp__browser__browser_type", "mcp__browser__browser_keydown", "mcp__browser__browser_select_option",
+                 "mcp__browser__browser_press_sequentially", "mcp__browser__browser_handle_dialog"):
+        assert re.search(entry["matcher"], tool), tool  # Claude Code tests it as a JS regex
+    assert not re.search(PRE_TOOL_MATCHER, "mcp__browser__browser_clickx")
+
+
+def test_the_route_hands_pre_tool_use_to_the_bridge():
+    b, reg, _ = make()
+    app = FastAPI()
+    app.include_router(make_router(b, "tok"))
+    assert TestClient(app).post("/hook/tok/PreToolUse", json=_click("Search")).json() == {}
+
+
+def test_typing_is_gated_only_when_it_submits():
+    b, reg, _ = make()
+    typed = dict(tool="mcp__browser__browser_type", text="4111 1111")
+    out, qs = _answer(b, reg, _click("Pay with card", **typed), None)  # no submit: just text in a box
+    assert out == {} and qs == []
+    out, qs = _answer(b, reg, _click("Pay with card", submit=True, **typed), "allow")
+    assert len(qs) == 1 and "4111" not in qs[0]["prompt"]  # never the typed text
+    assert out["hookSpecificOutput"]["permissionDecision"] == "allow"
+
+
+@pytest.mark.parametrize("tool,inp", [("mcp__browser__browser_keydown", {"key": "Enter"}),
+                                      ("mcp__browser__browser_select_option", {"values": ["Monthly"]})])
+def test_key_downs_and_dropdowns_on_a_checkout_page_are_gated(tool, inp):
+    b, reg, _ = make()
+    b.note_page({"session_id": "s1", "tool_name": "mcp__browser__browser_click",
+                 "tool_response": "- Page URL: https://shop.example/checkout"})
+    out, qs = _answer(b, reg, _click(None, tool=tool, **inp), "deny")
+    assert len(qs) == 1 and out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_a_broken_pre_tool_hook_denies_rather_than_lets_it_through():
+    b, reg, _ = make()
+
+    async def boom(p):
+        raise RuntimeError("bridge bug")
+
+    b.on_pre_tool_use = boom
+    app = FastAPI()
+    app.include_router(make_router(b, "tok"))
+    c = TestClient(app)
+    for r in (c.post("/hook/tok/PreToolUse", json=_click("Pay now")),
+              c.post("/hook/tok/PreToolUse", content=b"not json", headers={"content-type": "application/json"})):
+        assert r.json()["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert c.post("/hook/tok/Stop", content=b"not json").json() == {}  # other events: no decision, as before
+
+
+def test_typing_key_by_key_is_gated_only_when_it_submits():
+    b, reg, _ = make()
+    typed = dict(tool="mcp__browser__browser_press_sequentially", text="4111 1111")
+    assert _answer(b, reg, _click("Pay with card", **typed), None) == ({}, [])
+    out, qs = _answer(b, reg, _click("Pay with card", submit=True, **typed), "deny")
+    assert len(qs) == 1 and out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_accepting_a_site_dialog_always_asks_and_dismissing_it_never_does():
+    # confirm("Pay ₹1,999?") after a harmless-looking click: the dialog's text never reaches the hook
+    b, reg, _ = make()
+    dialog = dict(tool="mcp__browser__browser_handle_dialog")
+    assert _answer(b, reg, _click(None, accept=False, **dialog), None) == ({}, [])
+    out, qs = _answer(b, reg, _click(None, accept=True, **dialog), "deny")
+    assert len(qs) == 1 and out["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "pop-up" in qs[0]["prompt"] and "{" not in qs[0]["prompt"]  # said aloud: no raw JSON

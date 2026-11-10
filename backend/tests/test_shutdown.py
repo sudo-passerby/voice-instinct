@@ -16,11 +16,12 @@ def test_sigterm_cancels_open_sessions_and_still_reaches_the_server():
     original = signal.signal(signal.SIGTERM, lambda sig, frame: seen.append(sig))  # stands in for uvicorn
     try:
         open_runner, closed_runner = FakeRunner(), FakeRunner()
-        sessions = {open_runner}
+        sessions = {open_runner, closed_runner}
 
         async def main():
             cancel_on_exit(sessions)
             cancel_on_exit(sessions)  # every session installs it; the server must still hear the signal once
+            sessions.discard(closed_runner)  # that session ended before the signal (bot.py's finally)
             signal.raise_signal(signal.SIGTERM)
             await asyncio.sleep(0.05)
 

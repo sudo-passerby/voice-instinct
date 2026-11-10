@@ -1,7 +1,11 @@
-"""Voice agent: Parakeet (local) -> Gemini Flash -> Kokoro (local). Run: uv run bot.py"""
+"""Voice agent: local speech-to-text ([stt] engine: Nemotron by default, Parakeet, Whisper or Qwen3-ASR) -> the
+front model ([model]: Gemini by default, OpenAI-compatible or Ollama) -> Kokoro (local). The front model hands
+errands to a sandboxed Claude Code CLI (delegate.py) and relays its permission questions to the user (relay.py).
+Run: uv run bot.py"""
 
 import logging
 from contextlib import asynccontextmanager
+from functools import partial
 import os
 import sys
 from pathlib import Path
@@ -16,7 +20,10 @@ from budget import TimeBudget
 from claude_cli import ClaudeCodeBackend
 from clock import current_time
 from config import REPO_ROOT, load
-from delegate import make_tools
+from confirm import name_words
+from debugbrowser import launch as launch_debug_browser
+from delegate import errand_lock, make_tools
+from folders import Folders, make_folder_tools
 from gui import make_gui_router
 from guard import refuse_other_origins
 from hooks import HookBridge, hide_hook_tokens, load_token, make_router, write_run_settings
@@ -34,14 +41,13 @@ from pipecat.runner.run import app
 from pipecat.turns.user_turn_strategies import UserTurnStrategies, default_user_turn_start_strategies
 from pipecat.runner.types import RunnerArguments
 from pipecat.runner.utils import create_transport
-from pipecat.services.kokoro.tts import KokoroTTSService
 from pipecat.transports.base_transport import TransportParams
 from pipecat.utils.text.markdown_text_filter import MarkdownTextFilter
 from pipecat.workers.runner import WorkerRunner
 from registry import Registry
 from reminders import Reminders, make_reminder_tools
 from relay import Relay, make_bridge_tools, start_session
-from services import build_llm, kokoro_paths, make_stt
+from services import build_llm, make_stt, make_tts
 from shutdown import cancel_on_exit
 from steps import StepHub
 from telegram import Telegram
@@ -61,6 +67,7 @@ cfg = load()
 DATA = Path(cfg.data_dir).expanduser()
 registry = Registry(DATA / "harness.db")
 registry.expire_open()  # questions left open by a previous run can no longer be answered
+registry.close_unfinished()  # and no errand survived it: none shows as running
 sessions = set()  # open sessions' runners, cancelled when the server is stopped
 relay = Relay(registry)
 MEMORY = Memory(DATA / "memory")  # profile, notes and memory files (#25, #26); off if unusable
@@ -69,7 +76,8 @@ bridge = HookBridge(registry, relay, cfg.permission_timeout)
 HOOK_TOKEN = load_token(DATA / "hook-token")
 # Debug mode (config [debug] browser_steps): every errand browser step screenshotted (steps.py).
 TELEGRAM = Telegram.from_env()  # None until TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are set
-STEPS = StepHub(Path.home(), telegram=TELEGRAM) if cfg.debug_browser_steps else None
+STEPS = (StepHub(Path.home(), telegram=TELEGRAM, launch=partial(launch_debug_browser, hide_env=(cfg.api_key_env,)))
+         if cfg.debug_browser_steps else None)
 REMINDERS = Reminders(registry, relay, TELEGRAM)  # #4: one loop for the server, not per session
 _server_lifespan = app.router.lifespan_context
 
@@ -107,7 +115,12 @@ SYSTEM_PROMPT = (
     "If a delegate result is a question from the agent, such as a choice, ask the "
     "user and call delegate again with their reply and that result's errand id. For any follow-up "
     "about an earlier errand (check again, refine it, what about those), call delegate with its "
-    "errand id; for a new topic leave errand out. When you are told a session needs a decision, "
+    "errand id; for a new topic leave errand out. An errand works only in its own private workspace: pass "
+    "directory only when the user names a folder of theirs, with access read, or write if they want files "
+    "changed; never ask for delete access unless the user said to delete something. The tool asks the user "
+    "itself, so never claim access was given. When the user says an errand may always use a folder, call "
+    "allow_folder; list_folders says which folders errands may always use, revoke_folder takes that away. "
+    "When you are told a session needs a decision, "
     "ask the user, then call answer_question after they answer. Use list_sessions to answer what "
     "you are working on and stop_session to stop one. "
     + MEMORY_PROMPT +
@@ -128,6 +141,24 @@ def _browser_config():
 
 
 HOOK_PORT = 7860  # the runner's port: hooks post back to this same server
+# One backend and one errand lock for the process, like bridge and relay: a second voice session can't start a
+# second errand, and stop_session can stop a run that any session started.
+BACKEND = ClaudeCodeBackend(cmd=os.environ.get("VI_CLAUDE", "claude"), cwd=cfg.backend_cwd,
+                            timeout=cfg.backend_timeout, permission_mode=cfg.permission_mode,
+                            hide_env=(cfg.api_key_env, "TELEGRAM_CHAT_ID"),  # the bot token goes as *_TOKEN
+                            about_user=lambda: MEMORY.prompt_block(errand=True))  # read fresh per errand
+ERRANDS = errand_lock()
+# Folders the user lets errands always use (folders.py); read on every errand, so hand edits count at once.
+FOLDERS = Folders(DATA / "folders.json", Path.home(), DATA, REPO_ROOT, Path(cfg.workspace_dir).expanduser())
+
+
+def _run_settings(sid, debug_cwd=None, grant=None, cwd=None):
+    """This run's settings file: hooks, sandbox, deny rules and the folder grant the user said yes to."""
+    autonomy = sandbox_settings(Path.home(), REPO_ROOT, DATA, hook_port=HOOK_PORT, grant=grant, cwd=cwd)
+    return write_run_settings(
+        DATA / "runs", sid, HOOK_TOKEN, HOOK_PORT,
+        extra=autonomy if debug_cwd is None else with_debug_record(autonomy, debug_cwd, Path.home()),
+        hook_timeout=int(cfg.permission_timeout) + 10)  # Claude must outwait our own question timeout
 
 NO_AGENT = (
     " Right now Claude Code is not available on this computer, so you cannot run "
@@ -144,11 +175,8 @@ async def bot(runner_args: RunnerArguments):
     _quiet_logs()
     transport = await create_transport(runner_args, transport_params)
 
-    backend = ClaudeCodeBackend(cmd=os.environ.get("VI_CLAUDE", "claude"), cwd=cfg.backend_cwd,
-                                timeout=cfg.backend_timeout, permission_mode=cfg.permission_mode,
-                                hide_env=(cfg.api_key_env, "TELEGRAM_CHAT_ID"),  # the bot token goes as *_TOKEN
-                                mcp_config=_browser_config(),
-                                about_user=lambda: MEMORY.prompt_block(errand=True))  # read fresh per errand
+    backend = BACKEND
+    backend.mcp_config = _browser_config()  # looked up per connect, as before: a browser installed since counts
     # The name is set in config.toml, never from history; the profile is read fresh at every connect (#25).
     prompt = f"Your name is {cfg.name}. " + SYSTEM_PROMPT
     llm = build_llm(cfg, (prompt if backend.available() else prompt + NO_AGENT) + MEMORY.prompt_block())
@@ -166,24 +194,15 @@ async def bot(runner_args: RunnerArguments):
              # forget also scrubs the conversation restored at every connect (context is set below, before any call)
              *make_memory_tools(MEMORY, on_forget=lambda match: scrub_conversation(context, match, registry))]
     if backend.available():
-        autonomy = sandbox_settings(Path.home(), REPO_ROOT, DATA, hook_port=HOOK_PORT)
-        settings_for = lambda sid, debug_cwd=None: write_run_settings(
-            DATA / "runs", sid, HOOK_TOKEN, HOOK_PORT,
-            extra=autonomy if debug_cwd is None else with_debug_record(autonomy, debug_cwd, Path.home()),
-            hook_timeout=int(cfg.permission_timeout) + 10)  # Claude must outwait our own question timeout
         # Tools declare their own options with @tool_options; the context's tools (make_context) are the registration.
-        tools += [*make_tools(backend, registry, settings_for, on_finish=bridge.expire_session,
+        tools += [*make_tools(backend, registry, _run_settings, on_finish=bridge.expire_session,
                              workspace_root=Path(cfg.workspace_dir).expanduser(), steps=STEPS, budget=BUDGET,
-                             memory=MEMORY),
-                 *make_bridge_tools(bridge, relay, registry, backend)]
+                             memory=MEMORY, lock=ERRANDS, bridge=bridge, folders=FOLDERS),
+                 *make_bridge_tools(bridge, relay, registry, backend, names=name_words(cfg.wake_phrases)),
+                 *make_folder_tools(FOLDERS, bridge, registry, Path.home())]
     else:
         logger.warning("claude CLI not found; running front-model-only")
-    model_path, voices_path = kokoro_paths(cfg)
-    tts = KokoroTTSService(
-        model_path=str(model_path),
-        voices_path=str(voices_path),
-        settings=KokoroTTSService.Settings(voice="af_heart"),
-    )
+    tts = await make_tts(cfg)  # voice af_heart; the model is loaded once per process, off the event loop
     # Documented TTS text transformer: never read markdown aloud (Claude's results arrive as tables).
     markdown = MarkdownTextFilter()
     tts.add_text_transformer(lambda text, _type: markdown.filter(text), "*")
@@ -235,10 +254,14 @@ async def bot(runner_args: RunnerArguments):
 
     @assistant_aggregator.event_handler("on_assistant_turn_stopped")
     async def on_assistant_turn_stopped(aggregator, message):
-        relay.bot_turn(False)
+        relay.bot_turn(False, spoken=bool(message.content) and not message.interrupted)  # a note counts once said
         MEMORY.journal("assistant", message.content)
         wake.assistant_turn_done()  # the user can reply without the phrase, unless they said stop
         save_conversation(registry, context)
+
+    @llm.event_handler("on_function_calls_started")  # documented LLM service event
+    async def on_function_calls_started(service, function_calls):
+        relay.tool_called()  # a note's turn that is only a tool call still counts as said
 
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):

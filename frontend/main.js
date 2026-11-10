@@ -7,7 +7,7 @@ const { trayItems } = require("./tray.js");
 
 const BACKEND = "http://127.0.0.1:7860"; // the page's CSP allows only this backend
 const ORB_ORIGIN = "http://orb.invalid"; // same as backend/guard.py
-const DEFAULTS = { name: "Nova", size: 128, position: "top-right" }; // same as backend/config.py
+const DEFAULTS = { size: 128, position: "top-right" }; // same as backend/config.py
 app.setName("voice-instinct"); // Wayland app_id / X11 class, used by compositor window rules
 // Chromium's WebRTC gain control turns the system mic level down by itself (100% drifted to 82%, and the
 // user had to shout to wake it). The user's mic setting is left as they set it.
@@ -19,8 +19,8 @@ if (!app.requestSingleInstanceLock() || process.argv.includes("--quit")) {
   return;
 }
 
-// The page's console (connection events, errors; never what was said) goes to a file, so a dead or
-// stalled orb can be diagnosed. Started fresh once it passes 1 MB.
+// The page's warnings and errors (never what was said) go to a file, so a dead or stalled orb can be
+// diagnosed. Only those: client-js logs at info/debug can carry the bot's replies. Started fresh once it passes 1 MB.
 const LOG = path.join(os.homedir(), ".voice-instinct", "frontend.log");
 const log = (line) => {
   try { if (fs.statSync(LOG).size > 1e6) fs.truncateSync(LOG); } catch {}
@@ -37,7 +37,7 @@ let status = "Not connected (is the backend running?)"; // set by the renderer
 async function guiConfig() {
   for (;;) {
     try {
-      const r = await fetch(`${BACKEND}/gui-config`);
+      const r = await fetch(`${BACKEND}/gui-config`, { headers: { Origin: ORB_ORIGIN } }); // not through the session
       if (r.ok) return { ...DEFAULTS, ...(await r.json()) };
     } catch {}
     await new Promise((res) => setTimeout(res, 2000));
@@ -73,10 +73,11 @@ function createWindow() {
     webPreferences: { preload: path.join(__dirname, "preload.js"), contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
   win.setAlwaysOnTop(true, "floating");
-  win.webContents.on("console-message", (e) => log(`[${e.level}] ${e.message}`));
+  win.webContents.on("console-message", (e) => { if (e.level === "warning" || e.level === "error") log(`[${e.level}] ${e.message}`); });
   // A crashed or frozen page cannot reconnect itself: reload it (it reconnects on load).
   win.webContents.on("render-process-gone", (_e, d) => {
     log(`page gone: ${d.reason}`);
+    loaded = false; // a toggle until the reload finishes waits for it (did-finish-load) instead of going nowhere
     if (d.reason !== "clean-exit") setTimeout(() => { if (!win.isDestroyed()) win.reload(); }, 1000); // no tight crash loop
   });
   win.webContents.on("unresponsive", () => { log("page unresponsive; restarting it"); win.webContents.forcefullyCrashRenderer(); });

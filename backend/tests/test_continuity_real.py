@@ -56,7 +56,7 @@ def test_an_errand_continued_after_a_restart_resumes_the_same_claude_session(tmp
     import tempfile
 
     db, out = tmp_path / "harness.db", []
-    # Errands only run in folders inside the user's home (workspace.resolve_workdir), so not in /tmp.
+    # Its workspace root must be inside the user's home (folders.refusal), so not in /tmp.
     ws = Path(tempfile.mkdtemp(prefix="vi-test-continuity-", dir=Path.home() / ".voice-instinct"))
 
     async def cb(r, properties=None, **kw):
@@ -65,12 +65,12 @@ def test_an_errand_continued_after_a_restart_resumes_the_same_claude_session(tmp
     params = type("P", (), {"result_callback": staticmethod(cb)})
     backend = ClaudeCodeBackend(cmd=os.environ.get("VI_CLAUDE", "claude"), timeout=120, permission_mode="auto")
     try:
-        (delegate,) = make_tools(backend, Registry(db), lambda sid: None, workspace_root=ws)
+        (delegate,) = make_tools(backend, Registry(db), lambda sid, **kw: None, workspace_root=ws)
         asyncio.run(delegate(params, "Remember this code word for later: PAPAYA-417. Reply only with OK."))
         assert out[-1]["status"] == "done", out[-1]
         errand = out[-1]["errand"]
         first_sid = Registry(db).get_task(errand)["session_id"]
-        (delegate,) = make_tools(backend, Registry(db), lambda sid: None, workspace_root=ws)  # restarted
+        (delegate,) = make_tools(backend, Registry(db), lambda sid, **kw: None, workspace_root=ws)  # restarted
         out.clear()
         asyncio.run(delegate(params, "What was the code word I gave you? Reply with just the word.", errand=errand))
         assert out[-1]["status"] == "done" and "PAPAYA-417" in out[-1]["result"], out[-1]

@@ -15,8 +15,8 @@ size = 128                    # orb size in pixels
 position = "top-right"        # bottom-right | bottom-left | top-right | top-left | center
 
 [paths]
-models_dir = "~/.voice-instinct/models"
-data_dir = "~/.voice-instinct"
+# Models and data always live in ~/.voice-instinct, where the installer puts them: data_dir and
+# models_dir are refused here.
 workspace_dir = "~/.voice-instinct/workspace"
 
 [agent]

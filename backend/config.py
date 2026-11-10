@@ -1,5 +1,6 @@
 """Settings for both halves, read from config.toml at the repo root (sectioned; flat keys still work)."""
 
+import re
 import tomllib
 from dataclasses import dataclass, field, fields
 from pathlib import Path
@@ -24,8 +25,7 @@ _SECTIONS = {
     "assistant": {"name": "name", "awake_timeout": "awake_timeout"},
     "model": {"provider": "provider", "model": "model", "api_key_env": "api_key_env", "base_url": "base_url"},
     "gui": {"size": "gui_size", "position": "gui_position"},
-    "paths": {"models_dir": "models_dir", "data_dir": "data_dir", "workspace_dir": "workspace_dir",
-              "backend_cwd": "backend_cwd"},
+    "paths": {"workspace_dir": "workspace_dir", "backend_cwd": "backend_cwd"},  # data_dir, models_dir: load() refuses
     "agent": {"permission_mode": "permission_mode", "backend_timeout": "backend_timeout",
               "permission_timeout": "permission_timeout"},
     "debug": {"browser_steps": "debug_browser_steps"},
@@ -69,13 +69,20 @@ class Config:
     def wake_phrases(self) -> list[str]:
         """Only the name itself, wherever it is said ("Nova, what's on?", "hey nova"). The merged spellings Parakeet
         wrote for a quick "Hey Nova" ("Inova", "Anova") and Whisper's "no va" were dropped on 2026-11-10: Qwen writes
-        "Nova", and the owner wants only the name to wake it."""
-        return [" ".join(self.name.lower().split())]
+        "Nova", and the owner wants only the name to wake it.
+        Pipecat strips punctuation from what was heard before matching, so the phrase drops it too ("Nova!" -> "nova").
+        Punctuation inside a name becomes a space: Pipecat joins the phrase's words with \\s*, so "Mary-Jane" ->
+        "mary jane" matches both "Mary-Jane" (heard as "MaryJane") and "Mary Jane"."""
+        return [" ".join(re.sub(r"[^\w\s]", " ", self.name.lower()).split())]
 
 
 def load(path=None) -> Config:
     p = Path(path) if path else REPO_ROOT / "config.toml"
     data = tomllib.loads(p.read_text()) if p.exists() else {}
+    for key in ("data_dir", "models_dir"):  # kept as fields (tests set them), but never from the file
+        if key in data or key in (data.get("paths") if isinstance(data.get("paths"), dict) else {}):
+            raise ValueError(f"config.toml: [paths] {key} can't be changed: the installer and the errand browser "
+                             f"always use ~/.voice-instinct. Remove that line.")
     known = {f.name for f in fields(Config)}
     values = {k: v for k, v in data.items() if k in known}  # legacy flat keys
     for section, mapping in _SECTIONS.items():
@@ -86,12 +93,18 @@ def load(path=None) -> Config:
     if not isinstance(cfg.name, str) or not cfg.name.strip():
         raise ValueError("config.toml: [assistant] name must be non-empty text")
     cfg.name = cfg.name.strip()
+    if not cfg.wake_phrases[0]:
+        raise ValueError("config.toml: [assistant] name needs at least one letter or digit (it is the wake word)")
     if isinstance(cfg.gui_size, bool) or not isinstance(cfg.gui_size, int) or not 48 <= cfg.gui_size <= 1024:
         raise ValueError("config.toml: [gui] size must be a whole number of pixels from 48 to 1024")
     if isinstance(cfg.awake_timeout, bool) or not isinstance(cfg.awake_timeout, (int, float)) or cfg.awake_timeout <= 0:
         raise ValueError("config.toml: [assistant] awake_timeout must be a number of seconds above 0")
     if cfg.provider not in ("gemini", "openai", "ollama"):
         raise ValueError("config.toml: [model] provider must be gemini, openai or ollama")
+    for key in ("backend_timeout", "permission_timeout"):
+        v = getattr(cfg, key)
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            raise ValueError(f"config.toml: [agent] {key} must be a number of seconds")
     if not 0 < cfg.permission_timeout < cfg.backend_timeout:
         raise ValueError("config.toml: [agent] permission_timeout must be above 0 and below backend_timeout")
     if cfg.gui_position not in POSITIONS:

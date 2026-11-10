@@ -85,6 +85,18 @@ def test_the_debug_browser_is_hardened_like_playwrights_and_gets_no_secrets(tmp_
     assert "front-model-key" not in env and "bot-token" not in env and "TELEGRAM_CHAT_ID" not in env
 
 
+def test_the_configured_front_model_key_is_hidden_from_the_debug_browser_too(tmp_path, monkeypatch):
+    # [model] api_key_env can name a key without the *_API_KEY suffix; the agent already hides it.
+    monkeypatch.setenv("MY_LLM_SECRET", "front-model-key")
+    seen = tmp_path / "env"
+    fake = tmp_path / "chrome"
+    fake.write_text(f"#!/bin/sh\nenv > {seen}\nexit 1\n")
+    fake.chmod(0o755)
+    with pytest.raises(RuntimeError):
+        asyncio.run(launch(fake, timeout=2, hide_env=("MY_LLM_SECRET",)))
+    assert "front-model-key" not in seen.read_text()
+
+
 REAL = headless_shell(Path.home())
 
 

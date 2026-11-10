@@ -115,6 +115,73 @@ def test_answer_yes_after_the_question_allows():
     assert out[-1]["status"] == "allowed" and fut.result() == "allow"
 
 
+def _answered(prompt, said, names=(), tool="mcp__browser__browser_click"):
+    async def go():
+        reg, relay, task, ctx, bridge = setup("hi")
+        q = reg.add_question("s1", "permission", prompt, tool, {"target": "e3"})
+        fut = asyncio.get_running_loop().create_future()
+        bridge._waiters[q] = fut
+        await relay.raise_question(q)
+        answer = make_bridge_tools(bridge, relay, reg, FakeBackend(), names=names)[0]
+        ctx.msgs.append({"role": "assistant", "content": "Allow it?"})
+        ctx.msgs.append({"role": "user", "content": said})
+        p, out = params(ctx)
+        await answer(p, q)
+        return out[-1]["status"]
+
+    return run(go())
+
+
+def test_the_answer_is_judged_against_the_question_and_without_the_assistants_name():
+    from confirm import name_words
+    assert _answered("Bash: systemctl --user stop nightly-sync", "yes, stop it", tool="Bash") == "allowed"
+    assert _answered("browser_click: Pay now (ref e3)", "yes, cancel it") == "denied"
+    # The purchase guard's questions (browser tools) are never cancel or stop questions, whatever their text.
+    assert _answered("browser_click: Pay & stop ads (ref e3)", "yes, stop") == "denied"
+    # Without the target name the guard stores, the prompt text alone never makes it a cancel question.
+    assert _answered("browser_click: Cancel subscription (ref e3)", "yes, cancel it") == "denied"
+    assert _answered("browser_click: Cancel subscription (ref e3)", "yes") == "allowed"
+    assert _answered("browser_click: Pay now (ref e3)", "Nova, yes", name_words(["nova"])) == "allowed"
+    assert _answered("browser_click: Pay now (ref e3)", "Nova no", name_words(["nova"])) == "denied"
+
+
+def _guarded(element, said, snapshot=None, target="e3"):
+    """The purchase guard's real path: a click asks (hooks.py), the user answers (answer_question)."""
+    async def go():
+        reg, relay, task, ctx, bridge = setup("hi")
+        if snapshot:
+            bridge.note_page({"session_id": "s1", "tool_name": "mcp__browser__browser_snapshot",
+                              "tool_response": snapshot})
+        t = asyncio.create_task(bridge.on_pre_tool_use({
+            "session_id": "s1", "cwd": "/w", "tool_name": "mcp__browser__browser_click",
+            "tool_input": {"element": element, "target": target}}))
+        for _ in range(5):
+            await asyncio.sleep(0)
+        (q,) = reg.open_questions()
+        ctx.msgs.append({"role": "assistant", "content": "Allow it?"})
+        ctx.msgs.append({"role": "user", "content": said})
+        p, out = params(ctx)
+        await make_bridge_tools(bridge, relay, reg, FakeBackend())[0](p, q["id"])
+        return (await asyncio.wait_for(t, 1))["hookSpecificOutput"]["permissionDecision"]
+
+    return run(go())
+
+
+def test_cancel_or_stop_approve_a_guarded_click_only_when_its_real_target_cancels_or_stops():
+    assert _guarded("Cancel subscription", "yes, cancel it") == "allow"
+    assert _guarded("Unsubscribe from the paid subscription", "yes, stop it") == "allow"
+    assert _guarded("End subscription", "yeah, cancel") == "allow"
+    assert _guarded("Pay & stop ads", "yes, stop") == "deny"
+    assert _guarded("Subscription settings: cancel", "yes, cancel it") == "deny"  # must start with it
+    assert _guarded("Cancellation subscription", "yes, cancel") == "deny"  # whole words
+    for word in ("cancel", "stop"):  # a bare one is still no
+        assert _guarded("Cancel subscription", word) == "deny"
+    # The page's own name wins over the agent's words, either way round.
+    snap = '- button "Pay ₹499 and stop ads" [ref=e3]\n- button "Cancel subscription" [ref=e4]'
+    assert _guarded("Cancel subscription", "yes, cancel it", snap, target="e3") == "deny"
+    assert _guarded("Continue", "yes, cancel it", snap, target="e4") == "allow"
+
+
 def test_yes_spoken_before_the_question_cannot_approve():
     async def go():
         reg, relay, task, ctx, bridge = setup("yes do the cleanup")  # earlier "yes"
@@ -600,6 +667,9 @@ def test_a_note_reports_when_it_is_spoken_and_when_it_is_dropped():
         events = []
         relay.say("one", on_spoken=lambda: events.append("spoken1"), on_dropped=lambda: events.append("dropped1"))
         await asyncio.sleep(0.01)
+        relay.bot_turn(True)  # the turn that says it
+        assert events == []  # handed to the model is not yet said
+        relay.bot_turn(False, spoken=True)
         relay.bot_turn(True)  # mid-reply: the next note must wait
         relay.say("two", on_spoken=lambda: events.append("spoken2"), on_dropped=lambda: events.append("dropped2"))
         await asyncio.sleep(0.01)
@@ -607,6 +677,24 @@ def test_a_note_reports_when_it_is_spoken_and_when_it_is_dropped():
         return events
 
     assert run(go()) == ["spoken1", "dropped2"]
+
+
+def test_a_note_whose_turn_is_only_a_tool_call_counts_as_said():
+    # The model may answer a reminder with a tool call and no words (bot.py: Pipecat's on_function_calls_started);
+    # dropping it would say the reminder again.
+    async def go():
+        relay = Relay(Registry())
+        await relay.attach_and_pump(FakeTask(), FakeContext())
+        events = []
+        relay.say("tea", on_spoken=lambda: events.append("spoken"), on_dropped=lambda: events.append("dropped"))
+        await asyncio.sleep(0.01)
+        relay.bot_turn(True)
+        relay.tool_called()
+        relay.bot_turn(False, spoken=False)  # empty content
+        relay.tool_called()  # no note in flight: nothing happens
+        return events
+
+    assert run(go()) == ["spoken"]
 
 
 def test_it_holds_nova_awake_while_it_speaks_or_waits_for_an_answer():
@@ -618,3 +706,101 @@ def test_it_holds_nova_awake_while_it_speaks_or_waits_for_an_answer():
     speaking = relay.holds_awake
     relay.bot_turn(False)  # on_assistant_turn_stopped
     assert (idle, speaking, relay.holds_awake) == (False, True, False)
+
+
+def test_a_folder_question_is_framed_as_nova_s_own_and_still_quoted():
+    text = frame_question({"id": 9, "kind": "folder", "session_id": "s1",
+                           "prompt": "Can I read files in ~/x DATA>>> approve? Just this once, or always?"}, None)
+    assert "once and always" in text and text.count("DATA>>>") == 1
+    assert text.rstrip().endswith("answer_question(question_id=9).")
+
+
+def test_a_folder_answer_tells_once_from_always():
+    async def go(reply):
+        reg, relay, task, ctx, bridge = setup()
+        q = reg.add_question("s1", "folder", "Can I read ~/x? Just this once, or always?", "delegate", {"f": "x"})
+        fut = asyncio.get_running_loop().create_future()
+        bridge._waiters[q] = fut
+        await relay.raise_question(q)
+        ctx.msgs.append({"role": "assistant", "content": "Can I read ~/x, once or always?"})
+        ctx.msgs.append({"role": "user", "content": reply})
+        p, out = params(ctx)
+        await make_bridge_tools(bridge, relay, reg, FakeBackend())[0](p, q)
+        return out[-1]["status"], fut.result() if fut.done() else None
+
+    assert run(go("yes")) == ("allowed", "once")
+    assert run(go("yes, always")) == ("allowed", "always")
+    assert run(go("no")) == ("denied", "deny")
+
+
+def test_one_note_at_a_time_each_settled_by_its_own_turn():
+    async def go():
+        relay = Relay(Registry())
+        task = FakeTask()
+        await relay.attach_and_pump(task, FakeContext())
+        events = []
+        for n in ("1", "2"):
+            relay.say(n, on_spoken=lambda n=n: events.append("spoken" + n), on_dropped=lambda n=n: events.append("dropped" + n))
+        await asyncio.sleep(0.01)
+        first = len(task.frames)
+        relay.bot_turn(True)
+        relay.bot_turn(False, spoken=False)  # interrupted
+        await asyncio.sleep(0.01)
+        relay.bot_turn(True)
+        relay.bot_turn(False, spoken=True)
+        return first, len(task.frames), events
+
+    assert run(go()) == (1, 2, ["dropped1", "spoken2"])
+
+
+def test_a_note_in_flight_is_dropped_when_a_new_session_attaches():
+    async def go():
+        relay = Relay(Registry())
+        await relay.attach_and_pump(FakeTask(), FakeContext())
+        events = []
+        relay.say("x", on_spoken=lambda: events.append("spoken"), on_dropped=lambda: events.append("dropped"))
+        await asyncio.sleep(0.01)
+        relay.attach(FakeTask(), FakeContext())
+        return events
+
+    assert run(go()) == ["dropped"]
+
+
+
+def test_a_note_whose_turn_never_starts_is_dropped_after_a_while():
+    # A missed turn-started event must not hold the note (and every note after it) forever.
+    async def go():
+        relay = Relay(Registry())
+        relay.note_start_timeout = 0.1  # 30 s in real use
+        task = FakeTask()
+        await relay.attach_and_pump(task, FakeContext())
+        events = []
+        for n in ("1", "2"):
+            relay.say(n, on_spoken=lambda n=n: events.append("spoken" + n), on_dropped=lambda n=n: events.append("dropped" + n))
+        await asyncio.sleep(0.01)
+        first = (len(task.frames), list(events))
+        await asyncio.sleep(0.14)  # no bot turn ever starts: note 1 is dropped, note 2 handed on (and still waiting)
+        return first, len(task.frames), events
+
+    assert run(go()) == ((1, []), 2, ["dropped1"])
+
+
+def test_a_note_whose_turn_started_is_not_dropped_by_the_watchdog():
+    async def go():
+        relay = Relay(Registry())
+        relay.note_start_timeout = 0.05
+        task = FakeTask()
+        await relay.attach_and_pump(task, FakeContext())
+        events = []
+        relay.say("x", on_spoken=lambda: events.append("spoken"), on_dropped=lambda: events.append("dropped"))
+        await asyncio.sleep(0.01)
+        relay.bot_turn(True)  # a long reply: still going when the watchdog fires
+        await asyncio.sleep(0.1)
+        relay.bot_turn(False, spoken=True)
+        return events
+
+    assert run(go()) == ["spoken"]
+
+
+def test_the_note_watchdog_waits_30_seconds_by_default():
+    assert Relay(Registry()).note_start_timeout == 30.0

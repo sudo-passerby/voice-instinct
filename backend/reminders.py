@@ -23,13 +23,14 @@ def local_zone() -> ZoneInfo:
         return ZoneInfo("UTC")
 
 
-def next_due(due, repeat, now, tz):
-    """The same wall-clock time a day or week on (aware arithmetic keeps 9:00 across DST), never in the past."""
-    t = datetime.fromtimestamp(due, tz)
-    while True:
-        t = t + _STEP[repeat]
-        if t.timestamp() > now:
-            return t.timestamp()
+def next_due(anchor, repeat, now, tz):
+    """The anchor's wall-clock time a whole number of days or weeks on, never in the past. Counted from the time
+    the user set, not the last due time: 2:30 on the night clocks go forward is 3:30, and the day after is 2:30
+    again (aware arithmetic keeps the wall-clock time; only that one night has no 2:30)."""
+    start, n = datetime.fromtimestamp(anchor, tz), 1
+    while (t := (start + n * _STEP[repeat]).timestamp()) <= now:
+        n += 1
+    return t
 
 
 def spoken_time(ts, tz, now=None):
@@ -46,6 +47,7 @@ def spoken_time(ts, tz, now=None):
 
 TICK_SECS = 15
 LATE_SECS = 120
+RETRY_CAP_SECS = 600  # a failing Telegram is retried after 15 s, 30 s, 1 min ... at most every 10 min
 
 
 def screen_locked() -> bool:
@@ -72,6 +74,8 @@ class Reminders:
         self.tz = tz or local_zone()
         self._task = None
         self._recovered = False
+        self._retry = {}  # reminder id -> (next Telegram try, last wait), after a failed send
+        self._refused = set()  # reminder ids Telegram refused (a 4xx): never sent there again, said when back
 
     async def tick(self):
         now = self.clock()
@@ -89,10 +93,14 @@ class Reminders:
                 self._delivered(r, now)  # "queued": _delivered runs once Nova has actually said it
 
     def _delivered(self, r, now):
-        self.reg.mark_delivered(r["id"])
-        logger.info(f"reminder {r['id']} delivered")  # never the text
-        if r["repeat"] != "none":  # only after delivery, so an undeliverable one can't multiply
-            self.reg.add_reminder(r["text"], next_due(r["due"], r["repeat"], now, self.tz), r["repeat"])
+        self._retry.pop(r["id"], None)
+        self._refused.discard(r["id"])
+        if r["repeat"] == "none":
+            ok = self.reg.mark_delivered(r["id"])
+        else:  # only after delivery, so an undeliverable one can't multiply; the same row, so it can't double
+            ok = self.reg.reschedule(r["id"], next_due(r.get("anchor") or r["due"], r["repeat"], now, self.tz))
+        if ok:  # not when it was cancelled while it was being said: then no next time either
+            logger.info(f"reminder {r['id']} delivered")  # never the text
 
     async def _deliver(self, r, now):
         """True: delivered. "queued": waiting for a quiet moment to be spoken. False: no channel."""
@@ -101,11 +109,19 @@ class Reminders:
         if self.relay.attached and not await asyncio.to_thread(self.locked):
             self.relay.say(f"A reminder the user set is due now{late}: {r['text']}",
                            on_spoken=lambda: self._delivered(r, now),
-                           on_dropped=lambda: self.reg.unfire_reminder(r["id"]))
+                           on_dropped=lambda: self.reg.unfire_reminder(r["id"]),
+                           wanted=lambda: (self.reg.get_reminder(r["id"]) or {}).get("status") == "fired")
             return "queued"
-        if self.telegram is not None:
-            return await self.telegram.send_message(f"⏰ {r['text']} ({when})" + (" — late" if late else ""))
-        return False
+        if self.telegram is None or r["id"] in self._refused or now < self._retry.get(r["id"], (0, 0))[0]:
+            return False  # kept: said when the user is back, or sent at the next try
+        sent = await self.telegram.send_message(f"⏰ {r['text']} ({when})" + (" — late" if late else ""))
+        if sent is None:
+            logger.error(f"Telegram refused reminder {r['id']}; it waits to be said aloud (check TELEGRAM_* in .env)")
+            self._refused.add(r["id"])
+        elif not sent:
+            wait = min(2 * self._retry.get(r["id"], (0, TICK_SECS / 2))[1], RETRY_CAP_SECS)
+            self._retry[r["id"]] = (now + wait, wait)
+        return bool(sent)
 
     async def run(self):
         while True:
@@ -137,14 +153,14 @@ def make_reminder_tools(registry, telegram, clock=time.time, tz=None):
             t = datetime.fromisoformat(at)
         except ValueError:
             return await params.result_callback({"status": "refused", "reason": "at is not a date and time"})
-        due = (t if t.tzinfo else t.replace(tzinfo=tz)).timestamp()
+        due = anchor = (t if t.tzinfo else t.replace(tzinfo=tz)).timestamp()  # anchor: what the user said
         if not what.strip() or repeat not in REPEATS:
             return await params.result_callback({"status": "refused", "reason": "need what, and repeat none/daily/weekly"})
         if due <= now:
             if repeat == "none":
                 return await params.result_callback({"status": "refused", "reason": "that time has passed; ask the user"})
             due = next_due(due, repeat, now, tz)
-        rid = registry.add_reminder(what.strip(), due, repeat)
+        rid = registry.add_reminder(what.strip(), due, repeat, anchor=anchor)
         await params.result_callback({"status": "set", "id": rid, "when": spoken_time(due, tz, now), "repeat": repeat})
 
     @tool_options(cancel_on_interruption=False)
@@ -153,7 +169,7 @@ def make_reminder_tools(registry, telegram, clock=time.time, tz=None):
         now = clock()
         await params.result_callback({"reminders": [
             {"id": r["id"], "what": r["text"], "when": spoken_time(r["due"], tz, now), "repeat": r["repeat"]}
-            for r in registry.pending_reminders()]})
+            for r in registry.open_reminders()]})  # with those due and waiting to be said
 
     @tool_options(cancel_on_interruption=False)
     async def cancel_reminder(params, reminder_id: int):

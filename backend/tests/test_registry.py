@@ -143,3 +143,38 @@ def test_a_reminder_in_flight_is_done_once_delivered_or_put_back_on_restart():
     reg.mark_delivered(a)
     assert reg.requeue_in_flight() == 1  # b was never delivered: a restart puts it back
     assert [r["id"] for r in reg.due_reminders(5.0)] == [b]
+
+
+def test_after_a_restart_open_sessions_end_and_running_tasks_are_aborted():
+    # No run survives a restart: list_sessions must not show it running, nor its task as still going.
+    # An idle errand is resumable and nothing of it was running; a session the user runs in a terminal (external)
+    # is not ours and survives our restart.
+    r, _ = make()
+    for sid, state in (("run", "running"), ("idle", "idle"), ("wait", "waiting_input"), ("old", "ended")):
+        r.upsert_session(sid, state=state, origin="delegated")
+    r.upsert_session("ext", state="running")  # origin external, the default
+    r.set_state("old", "ended", end_reason="stopped_by_user")
+    t_running, t_done = r.create_task("run", "x"), r.create_task("idle", "y")
+    r.finish_task(t_done, "done", "ok")
+    r.close_unfinished()
+    for sid in ("run", "wait"):
+        s = r.get_session(sid)
+        assert (s["state"], s["end_reason"]) == ("ended", "restart") and s["ended_at"] is not None
+    assert r.get_session("idle")["state"] == "idle" and r.get_session("idle")["end_reason"] is None
+    assert r.get_session("ext")["state"] == "running"
+    assert r.get_session("old")["end_reason"] == "stopped_by_user"  # an earlier ending is kept
+    assert r.get_task(t_running)["status"] == "aborted" and r.get_task(t_done)["status"] == "done"
+
+
+def test_a_database_from_before_the_reminder_anchor_gains_it(tmp_path):
+    import sqlite3
+    db = tmp_path / "harness.db"
+    old = sqlite3.connect(db)
+    old.execute("CREATE TABLE reminders(id INTEGER PRIMARY KEY, text TEXT NOT NULL, due REAL NOT NULL, "
+                "repeat TEXT NOT NULL DEFAULT 'none', status TEXT NOT NULL DEFAULT 'pending', created REAL NOT NULL, fired REAL)")
+    old.execute("INSERT INTO reminders(text, due, created) VALUES('water', 100, 1)")
+    old.commit()
+    old.close()
+    reg = Registry(db)
+    assert reg.get_reminder(1)["anchor"] is None  # reminders.next_due then counts from its due time
+    assert reg.get_reminder(reg.add_reminder("tea", 200, "daily"))["anchor"] == 200

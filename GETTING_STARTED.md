@@ -35,10 +35,20 @@ In `config.toml`, set `provider = "ollama"` and `model` to a model you have pull
 
 ## Speech-to-text engine
 
-Speech is transcribed on your machine by NVIDIA's Nemotron streaming model (English) by default. To
-use the 40-language Nemotron or the previous Parakeet engine, set `engine` under `[stt]` in
-`config.toml` to `nemotron-multilingual` or `parakeet`, then re-run `./install.sh` (it downloads only
-the chosen model, about 450 MB) and restart. Nemotron's weights are under the NVIDIA Open Model License.
+Speech is transcribed on your machine. Set `engine` under `[stt]` in `config.toml` to one of these,
+then re-run `./install.sh` (it downloads only the chosen model) and restart:
+
+- `nemotron` (the default): NVIDIA's Nemotron streaming model, English, about 440 MB.
+- `nemotron-multilingual`: Nemotron in 40 languages, streaming, about 455 MB.
+- `parakeet`: the previous engine, about 465 MB.
+- `whisper-tiny`, `whisper-base`, `whisper-small`: better if you sit far from the mic or the room is
+  noisy (base heard far-away speech best in testing). They decode a phrase after you finish it, so the
+  reply starts a little later. About 111 MB, 198 MB and 610 MB.
+- `qwen3-asr-gpu`: Qwen3-ASR-1.7B on a supported GPU (AMD gfx1151 or NVIDIA), the most accurate for
+  English and for names you list under `keyterms`. About 10 GB of download and disk and about 7.5 GB of
+  RAM while it runs.
+
+Nemotron's weights are under the NVIDIA Open Model License. `config.example.toml` has the details.
 
 ## Debug mode: see every step
 
@@ -47,15 +57,19 @@ restart (`systemctl --user restart voice-instinct`). Every step of an errand is 
 `steps.md` in the errand's folder, under `debug/`: each web search with its query, each page it
 fetches or opens, each command, and how the errand ended. Browser steps that change the page (open
 a page, click, type, submit) also get a screenshot. What the agent typed or wrote is never written
-down, but the address of every page it opens is, including any codes in a link it follows.
+down, but the address of every page it opens is, including any codes in a link it follows. With
+Telegram set up (below), each step and screenshot is also sent there.
 
-To also get each step and screenshot in Telegram, create a bot with @BotFather, send it a message, and put
-its token and your chat id in `.env`:
+## Telegram (optional)
+
+Create a bot with @BotFather, send it a message, and put its token and your chat id in `.env`:
 
     TELEGRAM_BOT_TOKEN=123456:ABC...
     TELEGRAM_CHAT_ID=123456789
 
-They go only to that one chat, and only in debug mode.
+Messages go only to that one chat. With these set, a reminder reaches you in Telegram when the screen is
+locked or the orb is not running, Nova can send you something you ask for ("send me that address"),
+and in debug mode every step and screenshot is sent there too.
 
 ## If it doesn't respond
 

@@ -1,5 +1,6 @@
-"""Pipecat services: local speech-to-text (Nemotron streaming, or Parakeet; no built-in one exists)
-and the front-LLM builder."""
+"""Pipecat services: local speech-to-text (Nemotron streaming, Parakeet or Whisper through sherpa-onnx, or a client
+for the local Qwen3-ASR GPU server; Pipecat has no built-in one for these), Kokoro text-to-speech, and the
+front-LLM builder."""
 
 import asyncio
 import functools
@@ -14,12 +15,15 @@ from pathlib import Path
 import numpy as np
 from loguru import logger
 
+from pipecat.audio.utils import create_stream_resampler
 from pipecat.frames.frames import Frame, InterimTranscriptionFrame, TranscriptionFrame, UserStoppedSpeakingFrame
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.google.llm import GoogleLLMService
+from pipecat.services.kokoro.tts import KokoroTTSService
 from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.services.settings import STTSettings
 from pipecat.services.stt_service import SegmentedSTTService, STTService
+from pipecat.services.tts_service import TTSService
 from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
 
@@ -37,6 +41,34 @@ def parakeet_dir(cfg) -> Path:
 def kokoro_paths(cfg) -> tuple[Path, Path]:
     d = Path(cfg.models_dir).expanduser() / "kokoro"
     return d / "kokoro-v1.0.onnx", d / "voices-v1.0.bin"
+
+
+@functools.cache  # one copy for every session: reconnects must not load the model again
+def _load_kokoro(model_path: Path, voices_path: Path):
+    from kokoro_onnx import Kokoro
+    from pipecat.services.kokoro.tts import _ensure_model_files
+
+    _ensure_model_files(model_path, voices_path)  # downloads them if missing, as KokoroTTSService does
+    return Kokoro(str(model_path), str(voices_path))
+
+
+class SharedKokoroTTSService(KokoroTTSService):
+    """KokoroTTSService on a model loaded once per process. Its own __init__ loads the model for every session,
+    on the event loop; this one does the rest of that __init__ only (pinned to Pipecat 1.12 by test_services)."""
+
+    def __init__(self, kokoro, voice: str, **kwargs):
+        TTSService.__init__(self, push_start_frame=True, push_stop_frames=True,
+                            settings=self.Settings(model=None, voice=voice, language=Language.EN, speed=1.0),
+                            **kwargs)
+        if voice not in kokoro.voices:
+            raise ValueError(f"Kokoro TTS voice '{voice}' is not in the voices file")
+        self._kokoro = kokoro
+        self._resampler = create_stream_resampler()
+
+
+async def make_tts(cfg, voice: str = "af_heart") -> SharedKokoroTTSService:
+    """A Kokoro service per session; the model is loaded in a thread the first time, so the loop keeps running."""
+    return SharedKokoroTTSService(await asyncio.to_thread(_load_kokoro, *kokoro_paths(cfg)), voice)
 
 
 @functools.cache  # one copy for every session: reconnects must not load the model again
@@ -266,6 +298,7 @@ class QwenASRClient:
     def __init__(self, keyterms: list[str], port: int = QWEN_ASR_PORT, timeout: float = 15.0):
         self.keyterms, self.port, self.timeout = keyterms, port, timeout
         self._last_warned = float("-inf")
+        self._open = urllib.request.build_opener(urllib.request.ProxyHandler({})).open  # local: never a proxy
 
     def create_stream(self):
         return _QwenStream()
@@ -282,7 +315,7 @@ class QwenASRClient:
             req = urllib.request.Request(f"http://127.0.0.1:{self.port}/transcribe",
                                          data=qwen_asr_wire.encode(stream.audio, stream.rate, self.keyterms),
                                          headers={"Content-Type": "application/json"})
-            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+            with self._open(req, timeout=self.timeout) as r:
                 text = json.load(r)["text"]
             stream.result.text = text if isinstance(text, str) and not self._echoes_keyterms(text) else ""
         except Exception as e:  # down, slow, 500, bad JSON: a missed sentence, never a crashed pipeline

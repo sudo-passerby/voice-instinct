@@ -1,8 +1,11 @@
 import asyncio
 import json
 import os
+import signal
 import time
 from pathlib import Path
+
+import pytest
 
 from claude_cli import READ_ONLY_TOOLS, ClaudeCodeBackend, parse_stream
 
@@ -219,3 +222,72 @@ def test_another_job_can_bring_its_own_system_prompt(tmp_path):
     cli = _script(tmp_path, 'printf \'{"type":"result","result":"%s"}\\n\' "$*"\n')
     args = asyncio.run(ClaudeCodeBackend(cmd=cli, system_prompt="Consolidate memory.").run("t")).text
     assert "Consolidate memory." in args and "Time check" not in args
+
+
+def test_a_stopped_run_gets_sigterm_first_and_sigkill_only_for_what_ignores_it(tmp_path):
+    # A straight SIGKILL left the errand browser's Chromium behind: SIGTERM lets it close. A child that
+    # ignores SIGTERM (a wedged browser) is killed once the grace period is over.
+    from claude_cli import _end_group
+
+    log, pidfile = tmp_path / "log", tmp_path / "pids"
+    cli = _script(tmp_path, f"trap 'echo term >> {log}; exit 0' TERM\n"
+                            f"sh -c 'trap \"\" TERM; while :; do sleep 0.1; done' &\n"
+                            f"echo $$ $! > {pidfile}\nwhile :; do sleep 0.1; done\n")
+
+    async def go():
+        proc = await asyncio.create_subprocess_exec(cli, start_new_session=True)
+        await asyncio.sleep(0.4)
+        t0 = time.monotonic()
+        await _end_group(proc, grace=0.6)
+        await proc.wait()
+        return time.monotonic() - t0
+
+    took = asyncio.run(go())
+    leader, stubborn = map(int, pidfile.read_text().split())
+    assert log.read_text().strip() == "term"  # the CLI was asked to exit first
+    assert _dead(leader) and _dead(stubborn)  # and nothing of the group is left
+    assert 0.5 < took < 3  # the stubborn child got the grace period, then SIGKILL
+
+
+def test_a_group_that_exits_on_sigterm_is_not_waited_for(tmp_path):
+    from claude_cli import _end_group
+
+    cli = _script(tmp_path, "while :; do sleep 0.1; done\n")
+
+    async def go():
+        proc = await asyncio.create_subprocess_exec(cli, start_new_session=True)
+        await asyncio.sleep(0.2)
+        t0 = time.monotonic()
+        await _end_group(proc, grace=3)
+        await proc.wait()
+        return time.monotonic() - t0
+
+    assert asyncio.run(go()) < 1
+
+
+def test_a_stop_cancelled_again_during_the_grace_period_still_kills_the_group(tmp_path):
+    # A second barge-in or a session teardown cancels the stop mid-sleep: the SIGKILL must still go out.
+    from claude_cli import _end_group
+
+    pidfile = tmp_path / "pids"
+    cli = _script(tmp_path, f"trap '' TERM\nsh -c 'trap \"\" TERM; while :; do sleep 0.1; done' &\n"
+                            f"echo $$ $! > {pidfile}\nwhile :; do sleep 0.1; done\n")
+
+    async def go():
+        proc = await asyncio.create_subprocess_exec(cli, start_new_session=True)
+        await asyncio.sleep(0.4)
+        stop = asyncio.create_task(_end_group(proc, grace=30))
+        await asyncio.sleep(0.2)
+        stop.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await stop
+        await asyncio.wait_for(proc.wait(), 3)
+
+    try:
+        asyncio.run(go())
+    finally:
+        leader, stubborn = map(int, pidfile.read_text().split())
+        alive = not (_dead(leader) and _dead(stubborn))
+        if alive:  # never leave the test's own processes behind
+            os.killpg(leader, signal.SIGKILL)
+    assert not alive

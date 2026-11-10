@@ -83,3 +83,50 @@ def test_parakeet_is_built_from_its_folder(tmp_path):
     (tmp_path / STT_MODELS["parakeet"]).mkdir()
     stt = make_stt(Config(models_dir=str(tmp_path), stt_engine="parakeet"), recognizer=object())
     assert isinstance(stt, ParakeetSTTService)
+
+
+class FakeKokoro:
+    loads = []
+
+    def __init__(self, model_path, voices_path):
+        import threading
+        FakeKokoro.loads.append(threading.current_thread() is threading.main_thread())
+        self.voices = ["af_heart"]
+
+
+def test_kokoro_loads_once_per_process_and_off_the_event_loop(tmp_path, monkeypatch):
+    import asyncio
+
+    import kokoro_onnx
+    import services
+    d = tmp_path / "kokoro"
+    d.mkdir()
+    (d / "kokoro-v1.0.onnx").touch()
+    (d / "voices-v1.0.bin").touch()
+    monkeypatch.setattr(kokoro_onnx, "Kokoro", FakeKokoro)
+    services._load_kokoro.cache_clear()
+    FakeKokoro.loads = []
+    cfg = Config(models_dir=str(tmp_path))
+
+    async def two_sessions():
+        return await services.make_tts(cfg), await services.make_tts(cfg)
+
+    a, b = asyncio.run(two_sessions())
+    services._load_kokoro.cache_clear()
+    assert FakeKokoro.loads == [False]  # one load, in a worker thread
+    assert a is not b and a._kokoro is b._kokoro  # a service per session, one model
+
+
+def test_the_shared_kokoro_service_is_set_up_like_pipecats_own(monkeypatch):
+    # SharedKokoroTTSService skips KokoroTTSService.__init__ (it loads the model): pinned to Pipecat 1.12.
+    import pipecat.services.kokoro.tts as kokoro_tts
+    from services import SharedKokoroTTSService
+    monkeypatch.setattr(kokoro_tts, "Kokoro", FakeKokoro)
+    monkeypatch.setattr(kokoro_tts, "_ensure_model_files", lambda *a: None)
+    theirs = kokoro_tts.KokoroTTSService(model_path="m", voices_path="v",
+                                         settings=kokoro_tts.KokoroTTSService.Settings(voice="af_heart"))
+    ours = SharedKokoroTTSService(FakeKokoro("m", "v"), "af_heart")
+    assert ours._settings == theirs._settings
+    assert set(vars(ours)) == set(vars(theirs))
+    with pytest.raises(ValueError, match="voice"):
+        SharedKokoroTTSService(FakeKokoro("m", "v"), "no_such_voice")

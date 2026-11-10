@@ -33,7 +33,9 @@ CREATE TABLE IF NOT EXISTS conversation_bad(
   id INTEGER PRIMARY KEY, messages_json TEXT NOT NULL, at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS reminders(
   id INTEGER PRIMARY KEY, text TEXT NOT NULL, due REAL NOT NULL, repeat TEXT NOT NULL DEFAULT 'none',
-  status TEXT NOT NULL DEFAULT 'pending', created REAL NOT NULL, fired REAL);
+  status TEXT NOT NULL DEFAULT 'pending', created REAL NOT NULL, fired REAL, anchor REAL);
+CREATE TABLE IF NOT EXISTS grants(
+  session_id TEXT PRIMARY KEY REFERENCES sessions(id), folder TEXT NOT NULL, access TEXT NOT NULL, at REAL NOT NULL);
 CREATE INDEX IF NOT EXISTS reminders_due ON reminders(status, due);
 CREATE INDEX IF NOT EXISTS events_by_session ON events(session_id, at);
 CREATE INDEX IF NOT EXISTS questions_by_status ON questions(status);
@@ -55,6 +57,8 @@ class Registry:
         if path != ":memory:":
             self.db.execute("PRAGMA journal_mode=WAL")
         self.db.executescript(SCHEMA)
+        if "anchor" not in {r["name"] for r in self.db.execute("PRAGMA table_info(reminders)")}:
+            self.db.execute("ALTER TABLE reminders ADD COLUMN anchor REAL")  # a database from before it
         if path != ":memory:":
             os.chmod(path, 0o600)
 
@@ -148,8 +152,35 @@ class Registry:
             "UPDATE questions SET status='expired', answered_at=? WHERE status='open'",
             (self.clock(),)).rowcount
 
+    def close_unfinished(self):
+        """At startup: no run of ours survives a restart, so a session of ours that was running or waiting on a
+        question has ended, and a running task was aborted. The session can still be resumed. An idle one is left
+        as it is, and so is an external session (the user's own Claude Code, which our restart does not end)."""
+        now = self.clock()
+        self.db.execute("UPDATE sessions SET state='ended', ended_at=?, end_reason='restart' "
+                        "WHERE state IN ('running', 'waiting_input') AND origin != 'external'", (now,))
+        self.db.execute("UPDATE tasks SET status='aborted', finished_at=? WHERE status='running'", (now,))
+
+    def set_grant(self, session_id, folder, access):
+        """The folder grant an errand ran under (folders.py: once, always or a covering standing grant), for its
+        resumes. One folder per errand."""
+        self.db.execute("INSERT INTO grants(session_id, folder, access, at) VALUES(?,?,?,?) ON CONFLICT(session_id) "
+                        "DO UPDATE SET folder=excluded.folder, access=excluded.access, at=excluded.at",
+                        (session_id, str(folder), access, self.clock()))
+
+    def revoke_grants(self, folder):
+        """Drop every errand's grant for this folder or one under it (revoke_folder): their resumes ask again."""
+        gone = [r["session_id"] for r in self.db.execute("SELECT session_id, folder FROM grants")
+                if Path(r["folder"]).is_relative_to(folder)]
+        self.db.executemany("DELETE FROM grants WHERE session_id=?", [(s,) for s in gone])
+        return len(gone)
+
+    def get_grant(self, session_id):
+        return self._one("SELECT folder, access FROM grants WHERE session_id=?", (session_id,))
+
     def list_sessions(self, active_only=False):
-        where = "WHERE s.state != 'ended'" if active_only else ""
+        # origin 'nova': the holder of questions Nova asks for itself (allow_folder), not a Claude session
+        where = "WHERE s.origin != 'nova'" + (" AND s.state != 'ended'" if active_only else "")
         rows = self.db.execute(f"""
             SELECT s.*,
               (SELECT COUNT(*) FROM questions q WHERE q.session_id=s.id AND q.status='open') AS open_questions,
@@ -157,20 +188,29 @@ class Registry:
             FROM sessions s {where} ORDER BY s.started_at DESC""")
         return [dict(r) for r in rows]
 
-    def add_reminder(self, text, due, repeat="none"):
-        return self.db.execute("INSERT INTO reminders(text, due, repeat, created) VALUES(?, ?, ?, ?)",
-                               (text, due, repeat, self.clock())).lastrowid
+    def add_reminder(self, text, due, repeat="none", anchor=None):
+        """anchor: the time the user set, whose wall-clock time a repeat keeps (reminders.next_due); default due."""
+        return self.db.execute("INSERT INTO reminders(text, due, repeat, created, anchor) VALUES(?, ?, ?, ?, ?)",
+                               (text, due, repeat, self.clock(), due if anchor is None else anchor)).lastrowid
+
+    def get_reminder(self, rid):
+        return self._one("SELECT * FROM reminders WHERE id=?", (rid,))
 
     def pending_reminders(self):
         return [dict(r) for r in self.db.execute(
             "SELECT * FROM reminders WHERE status='pending' ORDER BY due")]
+
+    def open_reminders(self):
+        """Pending, or due and waiting to be spoken (fired): what the user still has coming."""
+        return [dict(r) for r in self.db.execute(
+            "SELECT * FROM reminders WHERE status IN ('pending', 'fired') ORDER BY due")]
 
     def due_reminders(self, now):
         return [dict(r) for r in self.db.execute(
             "SELECT * FROM reminders WHERE status='pending' AND due<=? ORDER BY due", (now,))]
 
     def cancel_reminder(self, rid):
-        return self.db.execute("UPDATE reminders SET status='cancelled' WHERE id=? AND status='pending'",
+        return self.db.execute("UPDATE reminders SET status='cancelled' WHERE id=? AND status IN ('pending', 'fired')",
                                (rid,)).rowcount == 1
 
     def mark_fired(self, rid, now):
@@ -179,7 +219,13 @@ class Registry:
                                (now, rid)).rowcount == 1
 
     def mark_delivered(self, rid):
-        self.db.execute("UPDATE reminders SET status='done' WHERE id=? AND status='fired'", (rid,))
+        """False: it was cancelled meanwhile."""
+        return self.db.execute("UPDATE reminders SET status='done' WHERE id=? AND status='fired'", (rid,)).rowcount == 1
+
+    def reschedule(self, rid, due):
+        """A delivered repeat, moved on in one UPDATE of its own row. False: it was cancelled meanwhile."""
+        return self.db.execute("UPDATE reminders SET status='pending', due=?, fired=NULL WHERE id=? AND status='fired'",
+                               (due, rid)).rowcount == 1
 
     def requeue_in_flight(self):
         """Claimed but never delivered (the bot stopped before Nova said it): pending again, so none is lost."""
