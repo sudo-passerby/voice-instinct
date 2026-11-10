@@ -1,5 +1,6 @@
-"""Pipecat services: local speech-to-text (Nemotron streaming, or Parakeet; no built-in one exists)
-and the front-LLM builder."""
+"""Pipecat services: local speech-to-text (Nemotron streaming, Parakeet or Whisper through sherpa-onnx, or a client
+for the local Qwen3-ASR GPU server; Pipecat has no built-in one for these), Kokoro text-to-speech, and the
+front-LLM builder."""
 
 import asyncio
 import functools

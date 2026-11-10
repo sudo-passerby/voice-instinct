@@ -1,4 +1,7 @@
-"""Voice agent: Parakeet (local) -> Gemini Flash -> Kokoro (local). Run: uv run bot.py"""
+"""Voice agent: local speech-to-text ([stt] engine: Nemotron by default, Parakeet, Whisper or Qwen3-ASR) -> the
+front model ([model]: Gemini by default, OpenAI-compatible or Ollama) -> Kokoro (local). The front model hands
+errands to a sandboxed Claude Code CLI (delegate.py) and relays its permission questions to the user (relay.py).
+Run: uv run bot.py"""
 
 import logging
 from contextlib import asynccontextmanager
