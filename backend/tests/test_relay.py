@@ -151,7 +151,7 @@ def _guarded(element, said, snapshot=None, target="e3"):
         reg, relay, task, ctx, bridge = setup("hi")
         if snapshot:
             bridge.note_page({"session_id": "s1", "tool_name": "mcp__browser__browser_snapshot",
-                              "tool_response": snapshot})
+                              "tool_response": f"### Snapshot\n```yaml\n{snapshot}\n```"})
         t = asyncio.create_task(bridge.on_pre_tool_use({
             "session_id": "s1", "cwd": "/w", "tool_name": "mcp__browser__browser_click",
             "tool_input": {"element": element, "target": target}}))

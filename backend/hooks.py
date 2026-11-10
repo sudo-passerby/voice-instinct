@@ -42,7 +42,10 @@ _NODE = re.compile(r'^\s*- ([^\s":\[]+)(?: ("(?:[^"\\]|\\.)*"))?((?: \[[^\]\s]*\
 # yamlEscapeKeyIfNeeded wraps the whole key in single quotes (a ' inside doubled) when the name holds ": ", " #",
 # {, }, a backtick and the like: `- 'button "Pay: ₹5000" [ref=e7]'`, then the same optional `: text`.
 _QUOTED_KEY = re.compile(r"^(\s*- )'((?:[^']|'')*)'(:.*)?$")
-_SNAPSHOT_LINK = re.compile(r"^- \[Snapshot\]\((.+)\)$", re.M)  # a page-changing step's snapshot, in a file
+# A response's own snapshot section (Response.serialize): "### Snapshot", then the YAML in a ```yaml frame, or a
+# page-changing step's link to its file. The last one: page text (a dialog's message) comes in earlier sections.
+_SNAPSHOT_HEAD = re.compile(r"^### Snapshot\n", re.M)
+_SNAPSHOT_LINK = re.compile(r"- \[Snapshot\]\((.+)\)$", re.M)
 
 
 def _targets(inp):
@@ -185,11 +188,23 @@ class HookBridge:
         if not sid or not str(p.get("tool_name", "")).startswith("mcp__browser__"):
             return
         texts = list(_texts(p.get("tool_response")))
-        url = page_url(texts)
+        url, before = page_url(texts), self._pages.get(sid)
         if url:
             self._pages[sid] = url
-        inline = "\n".join(t for t in texts if "[ref=" in t)  # browser_snapshot: the snapshot itself
-        link = next((m.group(1) for t in texts if (m := _SNAPSHOT_LINK.search(t))), None)
+        inp = p.get("tool_input") if isinstance(p.get("tool_input"), dict) else {}
+        snapshot_tool = p.get("tool_name") == "mcp__browser__browser_snapshot"
+        if snapshot_tool and (inp.get("target") or inp.get("depth") is not None):
+            if url and url != before:  # a part of a new page: the old page's names no longer hold
+                self._snapshots.pop(sid, None)
+            return  # a part of the same page: the full snapshot stored stays
+        inline = link = None
+        if heads := [(t, m) for t in texts for m in _SNAPSHOT_HEAD.finditer(t)]:
+            t, m = heads[-1]
+            body = t[m.end():]
+            if body.startswith("```yaml\n") and snapshot_tool:  # console text and other tools are never the page
+                inline = body[8:].split("\n```")[0]
+            elif lm := _SNAPSHOT_LINK.match(body):
+                link = lm.group(1)
         if inline:
             self._snapshots[sid] = inline[:SNAPSHOT_CAP]
         elif link and (f := self._snapshot_file(link, self._roots.get(sid))):
