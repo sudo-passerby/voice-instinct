@@ -471,7 +471,10 @@ def test_one_errand_at_a_time_for_the_whole_process_and_never_the_same_one_twice
     "Buy the blue kettle, my card is 4111 1111 1111 1111 exp 12/29", "use card 4111-1111-1111-1111",
     "card 378282246310005", "pay with 5555555555554444", "Order it. CVV 123", "the cvc is 4567",
     "my UPI PIN is 4321", "mpin 123456", "OTP 123456", "the one-time password is 908172",
-    "log in, netbanking password is hunter2", "net banking password: S3cret!"])
+    "log in, netbanking password is hunter2", "net banking password: S3cret!",
+    "my card is 4111 1111 1111 1111", "4111111111111111 exp 12/27", "card number: 4111-1111-1111-1111",
+    "order it with 4111111111111111", "card #4111111111111111", "order #4111111111111111 exp 12/27",
+    "booking id 4111111111111111 valid thru 08/29"])
 def test_an_errand_never_gets_card_or_upi_details(task):
     reg, b, delegate = setup([BackendResult("x")])
     p, out = make_params()
@@ -484,7 +487,11 @@ def test_an_errand_never_gets_card_or_upi_details(task):
 @pytest.mark.parametrize("task", [
     "Track order #40213", "call the shop on +91 98765 43210", "deliver to pin code 560001",
     "compare plans under 1999 rupees", "flight AI 2025 on 14 March, booking ref 1234 5678 9012 3456",
-    "what does an OTP mean on Paytm?", "how do I reset my netbanking password?", "find the CVV on a card"])
+    "what does an OTP mean on Paytm?", "how do I reset my netbanking password?", "find the CVV on a card",
+    # Luhn-valid, but labelled as an order or booking, or in Amazon's order format: not card details.
+    "track order 405-1234567-1234504", "order #4111111111111111", "order no: 4111111111111111",
+    "order number 4111 1111 1111 1111", "order id 4111111111111111", "tracking 4111111111111111",
+    "AWB: 4111111111111111", "PNR 4111111111111111", "booking id 4111111111111111", "#4111111111111111"])
 def test_ordinary_numbers_and_questions_about_payments_still_run(task):
     reg, b, delegate = setup([BackendResult("x")])
     p, out = make_params()

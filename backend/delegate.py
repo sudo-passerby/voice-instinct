@@ -33,6 +33,14 @@ _SECRETS = re.compile(
     re.I)
 
 
+# Not card details, Luhn or not: Amazon's order format, and a number labelled as an order, shipment or booking.
+_ORDER_FORMAT = re.compile(r"\d{3}-\d{7}-\d{7}")
+_ORDER_LABEL = re.compile(r"(\b(order(\s+(no\.?|number|id))?|tracking|awb|pnr|booking\s+id)\s*:?\s*#?|#)\s*$", re.I)
+# Still card details whatever the label: "card" just before it, or an expiry date just after.
+_CARD_LABEL = re.compile(r"\bcard\b\D{0,20}$", re.I)
+_EXPIRY = re.compile(r"^\D{0,20}\b(exp\w*|valid\s+(thru|till|until))\b\D{0,5}\d{1,2}\s*/\s*\d{2,4}", re.I)
+
+
 def _luhn(digits: str) -> bool:
     total = 0
     for i, c in enumerate(reversed(digits)):
@@ -43,9 +51,12 @@ def _luhn(digits: str) -> bool:
 
 def payment_details(text: str) -> bool:
     """A card number (Luhn-valid), a CVV/CVC, a UPI PIN, an OTP or a netbanking password, with its value.
-    ponytail: any 13-19 digit Luhn-valid run counts, so 1 in 10 such order numbers is refused too."""
-    cards = (re.sub(r"\D", "", m.group(0)) for m in _CARD.finditer(text or ""))
-    return any(_luhn(c) for c in cards) or bool(_SECRETS.search(text or ""))
+    ponytail: an unlabelled 13-19 digit Luhn-valid run counts, so 1 in 10 bare order numbers is refused too."""
+    text = text or ""
+    cards = (re.sub(r"\D", "", m.group(0)) for m in _CARD.finditer(text)
+             if _CARD_LABEL.search(text[:m.start()]) or _EXPIRY.search(text[m.end():])
+             or not (_ORDER_FORMAT.fullmatch(m.group(0)) or _ORDER_LABEL.search(text[:m.start()])))
+    return any(_luhn(c) for c in cards) or bool(_SECRETS.search(text))
 
 
 def _asked_to_delete(params) -> bool:
