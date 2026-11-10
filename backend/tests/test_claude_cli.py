@@ -219,3 +219,44 @@ def test_another_job_can_bring_its_own_system_prompt(tmp_path):
     cli = _script(tmp_path, 'printf \'{"type":"result","result":"%s"}\\n\' "$*"\n')
     args = asyncio.run(ClaudeCodeBackend(cmd=cli, system_prompt="Consolidate memory.").run("t")).text
     assert "Consolidate memory." in args and "Time check" not in args
+
+
+def test_a_stopped_run_gets_sigterm_first_and_sigkill_only_for_what_ignores_it(tmp_path):
+    # A straight SIGKILL left the errand browser's Chromium behind: SIGTERM lets it close. A child that
+    # ignores SIGTERM (a wedged browser) is killed once the grace period is over.
+    from claude_cli import _end_group
+
+    log, pidfile = tmp_path / "log", tmp_path / "pids"
+    cli = _script(tmp_path, f"trap 'echo term >> {log}; exit 0' TERM\n"
+                            f"sh -c 'trap \"\" TERM; while :; do sleep 0.1; done' &\n"
+                            f"echo $$ $! > {pidfile}\nwhile :; do sleep 0.1; done\n")
+
+    async def go():
+        proc = await asyncio.create_subprocess_exec(cli, start_new_session=True)
+        await asyncio.sleep(0.4)
+        t0 = time.monotonic()
+        await _end_group(proc, grace=0.6)
+        await proc.wait()
+        return time.monotonic() - t0
+
+    took = asyncio.run(go())
+    leader, stubborn = map(int, pidfile.read_text().split())
+    assert log.read_text().strip() == "term"  # the CLI was asked to exit first
+    assert _dead(leader) and _dead(stubborn)  # and nothing of the group is left
+    assert 0.5 < took < 3  # the stubborn child got the grace period, then SIGKILL
+
+
+def test_a_group_that_exits_on_sigterm_is_not_waited_for(tmp_path):
+    from claude_cli import _end_group
+
+    cli = _script(tmp_path, "while :; do sleep 0.1; done\n")
+
+    async def go():
+        proc = await asyncio.create_subprocess_exec(cli, start_new_session=True)
+        await asyncio.sleep(0.2)
+        t0 = time.monotonic()
+        await _end_group(proc, grace=3)
+        await proc.wait()
+        return time.monotonic() - t0
+
+    assert asyncio.run(go()) < 1
