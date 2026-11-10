@@ -11,7 +11,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Request
 from loguru import logger
 
-from debugbrowser import page_url
+from debugbrowser import _texts, page_url
 
 _EVENTS = ("PermissionRequest", "Stop", "SessionEnd", "SessionStart")
 # A browser step that may spend money or commit the user always goes to the user first (PreToolUse), whatever
@@ -30,6 +30,26 @@ MONEY_WORDS = re.compile(r"\b(pay|payment|buy|purchase|complete purchase|order|c
 # Debug mode's step hook (steps.py): every tool the agent uses. steps.SCREENSHOT_TOOLS picks the ones
 # that change the page and get a screenshot.
 STEP_MATCHER = "*"
+SNAPSHOT_CAP = 200_000  # characters of the latest page snapshot kept per session
+
+
+def _refs(inp):
+    """Every page ref a browser step acts on: its own and its form fields'."""
+    return [str(r) for r in (inp.get("ref"), *[f.get("ref") for f in inp.get("fields") or [] if isinstance(f, dict)])
+            if r]
+
+
+def snapshot_line(snapshot, ref):
+    """The snapshot's line for [ref=<ref>] (Playwright MCP's aria YAML: `- button "Pay ₹5000" [ref=e42] ...`),
+    without its leading dash, or None."""
+    m = re.search(rf"^\s*- (.*\[ref={re.escape(ref)}\].*)$", snapshot or "", re.M)
+    return m.group(1).strip() if m else None
+
+
+def _real_name(line):
+    """`button "Pay ₹5000"` from a snapshot line: the role and accessible name, no [attributes] or children."""
+    head = line.split(" [ref=")[0]
+    return re.sub(r"( \[[\w-]+(=[^\]]*)?\])+$", "", head)
 
 
 def hook_response(decision):
@@ -55,14 +75,17 @@ def _browser_target(inp):
     return " ".join(str(x) for x in (inp.get("element"), *fields, inp.get("key")) if x)
 
 
-def describe(tool_name, tool_input, page=None):
+def describe(tool_name, tool_input, page=None, real=None):
     inp = tool_input if isinstance(tool_input, dict) else {"input": tool_input}
     if tool_name == "mcp__browser__browser_handle_dialog":  # the dialog's own text never reaches the hook
         return "accept a pop-up the site opened" + (f" on {page}" if page else "") + (
             f", answering {str(inp['promptText'])[:80]!r}" if inp.get("promptText") else "") + " (it may confirm a payment)"
     if str(tool_name).startswith("mcp__browser__") and (inp.get("element") or inp.get("fields") or inp.get("key")):
         # The element text is the agent's own description: give the page ref it really targets as well.
-        ref = f" (ref {inp['ref']})" if inp.get("ref") else ""
+        notes = [f"ref {inp['ref']}"] if inp.get("ref") else []
+        if real:  # the page's own name for what it targets, from the latest snapshot
+            notes.append(f"on the page: {'; '.join(real)}")
+        ref = f" ({', '.join(notes)})" if notes else ""
         detail = f"{_browser_target(inp)}{ref}" + (f" on {page}" if page else "")
         return f"{str(tool_name).removeprefix('mcp__browser__')}: {detail}"
     detail = (inp.get("command") or inp.get("file_path") or inp.get("path") or inp.get("url")
@@ -75,6 +98,7 @@ class HookBridge:
         self.reg, self.relay, self.timeout = registry, relay, permission_timeout
         self._waiters: dict[int, asyncio.Future] = {}
         self._pages: dict[str, str] = {}  # session -> the page its browser last reported (PostToolUse)
+        self._snapshots: dict[str, str] = {}  # session -> its latest page snapshot text, capped
 
     def resolve(self, qid, decision):
         fut = self._waiters.get(qid)
@@ -86,6 +110,7 @@ class HookBridge:
     def expire_session(self, session_id):
         """Release hooks still waiting on this session (its run ended or was stopped)."""
         self._pages.pop(session_id, None)
+        self._snapshots.pop(session_id, None)
         for qid, fut in list(self._waiters.items()):
             q = self.reg.get_question(qid)
             if q and q["session_id"] == session_id and not fut.done():
@@ -100,10 +125,15 @@ class HookBridge:
                                             p.get("tool_name"), p.get("tool_input")))
 
     def note_page(self, p):
-        """PostToolUse: remember the page the errand browser is on, for on_pre_tool_use."""
-        url = page_url(p.get("tool_response")) if str(p.get("tool_name", "")).startswith("mcp__browser__") else None
-        if url and p.get("session_id"):
-            self._pages[p["session_id"]] = url
+        """PostToolUse: remember the page the errand browser is on and its latest snapshot, for on_pre_tool_use."""
+        sid = p.get("session_id")
+        if not sid or not str(p.get("tool_name", "")).startswith("mcp__browser__"):
+            return
+        if url := page_url(p.get("tool_response")):
+            self._pages[sid] = url
+        snap = "\n".join(t for t in _texts(p.get("tool_response")) if "[ref=" in t)
+        if snap:  # Playwright MCP sends the full snapshot after each page-changing step (--snapshot-mode full)
+            self._snapshots[sid] = snap[:SNAPSHOT_CAP]
 
     async def on_pre_tool_use(self, p):
         """A click, form fill or key press that may pay, buy, order or book asks the user first. Otherwise no
@@ -116,12 +146,15 @@ class HookBridge:
             return {}  # dismissing a dialog commits nothing
         page = self._pages.get(sid)
         dialog = tool == "mcp__browser__browser_handle_dialog"
-        if not sid or not (dialog or MONEY_WORDS.search(f"{_browser_target(inp)} {page or ''}")):
+        # `element` is written by the agent: also judge the line the page itself has for each ref.
+        lines = [ln for r in _refs(inp) if (ln := snapshot_line(self._snapshots.get(sid), r))]
+        if not sid or not (dialog or MONEY_WORDS.search(" ".join([_browser_target(inp), page or "", *lines]))):
             return {}
         logger.info(f"hook PreToolUse: a purchase-like step ({sid[:8]})")
         self.reg.upsert_session(sid, cwd=p.get("cwd"))
         self.reg.add_event(sid, "PreToolUse", p)
-        return pre_tool_response(await self.ask(sid, "permission", describe(p.get("tool_name"), inp, page),
+        real = [_real_name(ln) for ln in lines]
+        return pre_tool_response(await self.ask(sid, "permission", describe(p.get("tool_name"), inp, page, real),
                                                 p.get("tool_name"), inp))
 
     async def ask(self, sid, kind, prompt, tool_name=None, tool_input=None):

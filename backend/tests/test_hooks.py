@@ -318,6 +318,37 @@ def test_the_question_names_the_real_target_and_the_page():
     assert qs[0]["prompt"] == "browser_click: Continue (ref e42) on https://shop.example/checkout"
 
 
+SNAPSHOT = """- Page URL: https://shop.example/cart
+- Page Title: Cart
+### Snapshot
+```yaml
+- generic [ref=e2]:
+  - heading "Your cart" [level=1] [ref=e3]
+  - button "Continue shopping" [ref=e41] [cursor=pointer]
+  - button "Pay ₹5000" [ref=e42] [cursor=pointer]
+```
+"""
+
+
+def test_a_click_is_judged_by_the_snapshots_real_name_not_the_agents_description():
+    # The agent writes `element` itself: "Continue" on a ref that is really the "Pay ₹5000" button.
+    b, reg, _ = make()
+    b.note_page({"session_id": "s1", "tool_name": "mcp__browser__browser_snapshot",
+                 "tool_response": [{"type": "text", "text": SNAPSHOT}]})
+    out, qs = _answer(b, reg, _click("Continue", ref="e42"), "deny")
+    assert len(qs) == 1 and out["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert 'button "Pay ₹5000"' in qs[0]["prompt"] and "e42" in qs[0]["prompt"]
+    # The real "Continue shopping" button on the same page is left alone.
+    assert _answer(b, reg, _click("Continue", ref="e41"), None) == ({}, [])
+
+
+def test_the_kept_snapshot_is_bounded():
+    b, _, _ = make()
+    b.note_page({"session_id": "s1", "tool_name": "mcp__browser__browser_snapshot",
+                 "tool_response": "- button \"x\" [ref=e1]\n" + "a" * 1_000_000})
+    assert len(b._snapshots["s1"]) <= 200_000
+
+
 def test_form_fills_and_key_presses_are_gated_too():
     b, reg, _ = make()
     fill = _click(None, tool="mcp__browser__browser_fill_form",
