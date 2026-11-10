@@ -160,7 +160,11 @@ def make_folder_tools(folders, bridge, registry, home):
         registry.upsert_session(NOVA_SID, origin="nova", mode="nova", state="idle")
         answer = await bridge.ask(NOVA_SID, "folder", question(folder, access, home, standing=True),
                                   "allow_folder", {"folder": str(folder), "access": access})
-        if answer not in ("once", "always"):  # "just this once" to a standing question saves nothing
+        if answer == "once":  # "just this once" to a standing question saves nothing (relay: standing_answer)
+            await params.result_callback({"status": "not_granted", "result": "You said just this once, so nothing "
+                                          "was saved; each errand will ask about that folder."})
+            return
+        if answer != "always":
             await params.result_callback({"status": "not_granted", "result": "Nothing was saved; errands will ask."})
             return
         folders.allow(folder, access)

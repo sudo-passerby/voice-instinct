@@ -239,6 +239,19 @@ def test_a_grant_up_front_is_saved_only_after_the_users_own_yes(w):
     assert [(f["folder"], f["access"]) for f in out[-1]["folders"]] == [("~/Documents", "read")]
 
 
+@pytest.mark.parametrize("reply", ["just this once", "once", "sure, just this once"])
+def test_just_this_once_to_a_standing_question_saves_nothing_and_says_so(w, reply):
+    out, _ = w.go(w.allow_folder, "~/Documents", "read", reply=reply)
+    assert out[-1]["status"] == "not_granted" and "once" in out[-1]["result"]
+    assert w.fresh_folders().load() == []
+
+
+@pytest.mark.parametrize("reply", ["yes", "sure", "yes, always", "always"])
+def test_a_plain_yes_to_a_standing_question_saves_it(w, reply):
+    out, _ = w.go(w.allow_folder, "~/Documents", "read", reply=reply)
+    assert out[-1]["status"] == "granted" and w.fresh_folders().access(w.home / "Documents") == "read"
+
+
 def test_revoke_removes_the_grant_without_asking(w):
     w.folders.allow((w.home / "Documents").resolve(), "write")
     out, asked = w.go(w.revoke_folder, "~/Documents")
@@ -256,7 +269,11 @@ def test_nova_s_own_questions_never_show_as_errands(w):
                                        ("always", "always"), ("yes always", "always"), ("from now on, yes", "always"),
                                        ("yeah anytime", "always"), ("not always, just this time", "once"),
                                        ("no", "no"), ("never", "no"), ("always? what does that mean", "unclear"),
-                                       ("hmm", "unclear")])
+                                       ("hmm", "unclear"),
+                                       # A negated "once" or "this time" is a refusal, not a one-off yes.
+                                       ("Not this time.", "no"), ("not once", "no"), ("Not always.", "no"),
+                                       ("not now", "no"), ("not yet", "no"), ("no, not this time", "no"),
+                                       ("once", "once"), ("just this once", "once")])
 def test_once_or_always_comes_from_the_users_own_words(said, want):
     assert grant_answer(said) == want
 

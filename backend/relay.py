@@ -6,7 +6,7 @@ import time
 
 from loguru import logger
 
-from confirm import classify, grant_answer, last_user_text
+from confirm import classify, grant_answer, last_user_text, standing_answer
 from pipecat.adapters.schemas.direct_function import tool_options
 from pipecat.frames.frames import LLMMessagesAppendFrame
 from pipecat.services.llm_service import FunctionCallParams
@@ -279,7 +279,9 @@ def make_bridge_tools(bridge, relay, registry, backend):
                 {"status": "unclear", "instruction": "Ask the user yes or no first."})
             return
         # A folder question (folders.py) also tells "just this once" from "always", from the user's words alone.
-        verdict = grant_answer(reply) if q["kind"] == "folder" else classify(reply)
+        # allow_folder's own question already asks for always: there a plain yes is always (folders.py).
+        verdict = (classify(reply) if q["kind"] != "folder" else
+                   standing_answer(reply) if q["tool_name"] == "allow_folder" else grant_answer(reply))
         if verdict == "unclear":
             relay.reask(question_id)  # a fresh marker, so only an answer to the new ask can count
             await params.result_callback(
