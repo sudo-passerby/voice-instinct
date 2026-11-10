@@ -125,14 +125,16 @@ def make_router(bridge, token, steps=None, budget=None):
     return router
 
 
+_TOKEN = re.compile(r"/hook/[^/?\s]+")  # with or without an event after it
+
+
 def hide_hook_tokens(record):
     """Logging filter for uvicorn's access log: keep hook calls (a refused one must be visible) but
     blank out the secret token in their URL."""
     if isinstance(record.args, tuple):
-        record.args = tuple(re.sub(r"/hook/[^/]+/", "/hook/…/", a) if isinstance(a, str) else a
-                            for a in record.args)
+        record.args = tuple(_TOKEN.sub("/hook/…", a) if isinstance(a, str) else a for a in record.args)
     elif "/hook/" in str(record.msg):
-        record.msg = re.sub(r"/hook/[^/]+/", "/hook/…/", str(record.msg))
+        record.msg = _TOKEN.sub("/hook/…", str(record.msg))
     return True
 
 

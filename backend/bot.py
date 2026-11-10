@@ -2,6 +2,7 @@
 
 import logging
 from contextlib import asynccontextmanager
+from functools import partial
 import os
 import sys
 from pathlib import Path
@@ -16,6 +17,7 @@ from budget import TimeBudget
 from claude_cli import ClaudeCodeBackend
 from clock import current_time
 from config import REPO_ROOT, load
+from debugbrowser import launch as launch_debug_browser
 from delegate import make_tools
 from gui import make_gui_router
 from guard import refuse_other_origins
@@ -70,7 +72,8 @@ bridge = HookBridge(registry, relay, cfg.permission_timeout)
 HOOK_TOKEN = load_token(DATA / "hook-token")
 # Debug mode (config [debug] browser_steps): every errand browser step screenshotted (steps.py).
 TELEGRAM = Telegram.from_env()  # None until TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are set
-STEPS = StepHub(Path.home(), telegram=TELEGRAM) if cfg.debug_browser_steps else None
+STEPS = (StepHub(Path.home(), telegram=TELEGRAM, launch=partial(launch_debug_browser, hide_env=(cfg.api_key_env,)))
+         if cfg.debug_browser_steps else None)
 REMINDERS = Reminders(registry, relay, TELEGRAM)  # #4: one loop for the server, not per session
 _server_lifespan = app.router.lifespan_context
 

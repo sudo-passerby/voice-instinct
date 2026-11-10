@@ -39,19 +39,27 @@ def _bash(inp):
     return f"{cmd} ({desc})" if desc else cmd
 
 
+def _no_query(url):
+    """A URL without its query or fragment: they can carry tokens, search terms or personal details."""
+    return re.split(r"[?#]", url, maxsplit=1)[0]
+
+
 def action(tool_name, tool_input):
     """One line for a step: the tool and what it acted on."""
     inp = tool_input if isinstance(tool_input, dict) else {}
     name = str(tool_name)
     if name.startswith("mcp__browser__"):
         # A single key may be part of a password typed key by key; named keys (Enter, Tab) are kept.
-        parts = [str(inp[k]) for k in _FIELDS if inp.get(k) and not (k == "key" and len(str(inp[k])) == 1)]
+        parts = [_no_query(str(inp[k])) if k == "url" else str(inp[k])
+                 for k in _FIELDS if inp.get(k) and not (k == "key" and len(str(inp[k])) == 1)]
         if isinstance(inp.get("fields"), list):  # fill_form: the field names only
             parts += [str(f["name"]) for f in inp["fields"] if isinstance(f, dict) and f.get("name")]
     elif name == "Bash":
         parts = [_bash(inp)]
     else:
         parts = [str(inp[_TOOL_FIELD[name]])] if inp.get(_TOOL_FIELD.get(name, "")) else []
+        if name == "WebFetch":
+            parts = [_no_query(p) for p in parts]
     name = name.removeprefix("mcp__browser__")
     detail = " ".join(" ".join(parts).split())[:200]
     return f"{name}: {detail}" if detail else name

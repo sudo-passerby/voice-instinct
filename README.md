@@ -61,7 +61,8 @@ Built on [Pipecat](https://docs.pipecat.ai).
   and the task (Gemini and Claude are cloud services); use Ollama for a local front model.
 - Say "bye" or "stop" to send it away; running errands carry on.
 - Errands can read your memory but never change it, and never see the raw journal of your conversations.
-  The nightly memory run has no network and no web tools, and learns only what you said, never what a
+  The nightly memory run has no network and no web tools. It learns from what you and Nova said, Nova's
+  spoken summaries of errand results included, never the raw text of what a
   web page said. Journals are deleted after 7 days; `./install.sh --uninstall --purge` deletes all memory.
 
 Using a subscription CLI this way depends on the vendor's terms; check them before relying on it.

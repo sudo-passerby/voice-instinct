@@ -194,6 +194,10 @@ def test_settings_file_is_private_and_access_log_hides_tokens(tmp_path):
     # Hook calls stay in the log (a refused hook must be visible) with the token blanked out.
     assert hide_hook_tokens(hook_line) is True and hide_hook_tokens(other) is True
     assert "sekret" not in hook_line.getMessage() and "/hook/…/Stop" in hook_line.getMessage() and "403" in hook_line.getMessage()
+    for path in ("/hook/sekret", "/hook/sekret?x=1"):  # a probe with no event after the token
+        bare = logging.LogRecord("uvicorn.access", 20, "", 0, fmt, ("127.0.0.1:1", "POST", path, "1.1", 404), None)
+        hide_hook_tokens(bare)
+        assert "sekret" not in bare.getMessage() and "/hook/…" in bare.getMessage()
 
 
 def test_a_timeout_tells_the_relay_the_question_expired_but_an_answer_does_not():

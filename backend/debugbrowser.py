@@ -48,13 +48,14 @@ class Browser:
         shutil.rmtree(self.profile, ignore_errors=True)
 
 
-async def launch(exe, timeout=10):
+async def launch(exe, timeout=10, hide_env=()):
+    """hide_env: the front model's key name (config [model] api_key_env), whatever it is called."""
     profile = tempfile.mkdtemp(prefix="vi-browser-")
     try:
         proc = await asyncio.create_subprocess_exec(
             str(exe), f"--user-data-dir={profile}", "--remote-debugging-port=0", *_SWITCHES, "about:blank",
             stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
-            env=_agent_env(("TELEGRAM_CHAT_ID",)),  # ponytail: a front-model key not named *_API_KEY still passes
+            env=_agent_env(("TELEGRAM_CHAT_ID", *hide_env)),
             start_new_session=True)
     except BaseException:
         shutil.rmtree(profile, ignore_errors=True)

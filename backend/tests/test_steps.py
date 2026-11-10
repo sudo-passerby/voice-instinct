@@ -75,6 +75,14 @@ def test_typed_text_and_form_values_never_reach_the_record():
     assert action("mcp__browser__browser_navigate_back", {}) == "browser_navigate_back"
 
 
+def test_query_strings_never_reach_the_record_or_telegram():
+    # A query can carry a session token, a search for something private or a reset link's secret.
+    assert action("mcp__browser__browser_navigate", {"url": "https://a.example/reset?token=s3cret#x"}) == \
+        "browser_navigate: https://a.example/reset"
+    assert action("WebFetch", {"url": "https://a.example/p?q=my+diagnosis", "prompt": "p"}) == \
+        "WebFetch: https://a.example/p"
+
+
 def test_a_password_typed_key_by_key_is_not_recorded_but_named_keys_are():
     assert action("mcp__browser__browser_press_key", {"key": "h"}) == "browser_press_key"
     assert action("mcp__browser__browser_press_key", {"key": "Enter"}) == "browser_press_key: Enter"
