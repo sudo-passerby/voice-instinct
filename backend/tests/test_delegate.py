@@ -38,7 +38,7 @@ def make_params():
 def setup(results):
     reg = Registry()
     b = FakeBackend(results)
-    (delegate,) = make_tools(b, reg, lambda sid: f"/settings/{sid}.json")
+    (delegate,) = make_tools(b, reg, lambda sid, **kw: f"/settings/{sid}.json")
     return reg, b, delegate
 
 
@@ -67,7 +67,7 @@ def test_a_finished_errand_goes_into_the_journal_for_the_nightly_memory_run():
             self.lines.append((who, text))
 
     j = Journal()
-    (delegate,) = make_tools(FakeBackend([BackendResult("x" * 3000)]), Registry(), lambda sid: "/s.json", memory=j)
+    (delegate,) = make_tools(FakeBackend([BackendResult("x" * 3000)]), Registry(), lambda sid, **kw: "/s.json", memory=j)
     p, out = make_params()
     run(delegate(p, "find cotton t-shirts"))
     (who, text), = j.lines
@@ -108,7 +108,7 @@ def test_second_task_while_running_is_busy_then_allowed_after():
     async def go():
         gate = asyncio.Event()
         b = GatedBackend(gate)
-        (delegate,) = make_tools(b, Registry(), lambda sid: None)
+        (delegate,) = make_tools(b, Registry(), lambda sid, **kw: None)
         p1, out1 = make_params()
         p2, out2 = make_params()
         t = asyncio.create_task(delegate(p1, "first"))
@@ -132,7 +132,7 @@ class RaisingBackend:
 
 def test_backend_crash_reports_error_frees_the_slot_and_marks_task_failed():
     reg = Registry()
-    (delegate,) = make_tools(RaisingBackend(), reg, lambda sid: None)
+    (delegate,) = make_tools(RaisingBackend(), reg, lambda sid, **kw: None)
     p, out = make_params()
     run(delegate(p, "x"))
     assert out[-1]["status"] == "error"
@@ -147,7 +147,7 @@ def test_settings_file_is_removed_and_open_questions_released_after_a_run(tmp_pa
     f = tmp_path / "run.json"
     f.write_text("{}")
     finished = []
-    (delegate,) = make_tools(FakeBackend([BackendResult("ok")]), Registry(), lambda sid: str(f),
+    (delegate,) = make_tools(FakeBackend([BackendResult("ok")]), Registry(), lambda sid, **kw: str(f),
                              on_finish=finished.append)
     p, out = make_params()
     run(delegate(p, "x"))
@@ -156,7 +156,7 @@ def test_settings_file_is_removed_and_open_questions_released_after_a_run(tmp_pa
 
 def with_dirs(tmp_path, results):
     reg, b = Registry(), FakeBackend(results)
-    (delegate,) = make_tools(b, reg, lambda sid: None, workspace_root=tmp_path / "ws", home=tmp_path)
+    (delegate,) = make_tools(b, reg, lambda sid, **kw: None, workspace_root=tmp_path / "ws", home=tmp_path)
     return reg, b, delegate
 
 
@@ -204,7 +204,7 @@ def test_delegate_is_declared_async_with_a_timeout_past_the_backend_budget():
         async def run(self, *a, **k):
             return BackendResult("x")
 
-    (delegate,) = make_tools(B(), Registry(), lambda sid: None)
+    (delegate,) = make_tools(B(), Registry(), lambda sid, **kw: None)
     assert delegate._pipecat_cancel_on_interruption is False
     assert delegate._pipecat_timeout_secs == 130  # backend timeout + margin, so the framework never cuts a live run
 
@@ -215,12 +215,12 @@ def test_the_deadline_also_covers_the_folder_question():
         timeout = 100
 
     bridge = SimpleNamespace(timeout=90)  # HookBridge's permission_timeout
-    (delegate,) = make_tools(B(), Registry(), lambda sid: None, bridge=bridge)
+    (delegate,) = make_tools(B(), Registry(), lambda sid, **kw: None, bridge=bridge)
     assert delegate._pipecat_timeout_secs == 100 + 90 + 30
 
 
 def test_timeout_defaults_when_the_backend_has_none():
-    (delegate,) = make_tools(FakeBackend([]), Registry(), lambda sid: None)
+    (delegate,) = make_tools(FakeBackend([]), Registry(), lambda sid, **kw: None)
     assert delegate._pipecat_timeout_secs == 330
 
 
@@ -246,7 +246,7 @@ def test_a_stopped_session_is_not_resumed_or_marked_idle():
             return res
 
     b = StoppingBackend([BackendResult("The task was stopped.", is_error=True, stopped=True), BackendResult("ok", "x")])
-    (delegate,) = make_tools(b, reg, lambda sid: None)
+    (delegate,) = make_tools(b, reg, lambda sid, **kw: None)
     p, _ = make_params()
     run(delegate(p, "book a table"))
     run(delegate(p, "what's the weather"))
@@ -264,7 +264,7 @@ def test_an_errand_cancelled_with_its_session_is_recorded_as_aborted():
             await asyncio.sleep(10)
 
     b = Hangs([])
-    (delegate,) = make_tools(b, reg, lambda sid: None)
+    (delegate,) = make_tools(b, reg, lambda sid, **kw: None)
 
     async def go():
         p, _ = make_params()
@@ -302,7 +302,7 @@ class FakeSteps:
 def _debug_setup(backend):
     reg, steps, seen = Registry(), FakeSteps(), []
 
-    def settings_for(sid, debug_cwd=None):
+    def settings_for(sid, debug_cwd=None, **kw):
         seen.append(debug_cwd)
         return f"/settings/{sid}.json"
 
@@ -339,7 +339,7 @@ def test_a_debug_setup_failure_still_ends_the_errand_and_closes_its_browser():
 
     reg, steps = Registry(), Boom()
 
-    def settings_for(sid, debug_cwd=None):
+    def settings_for(sid, debug_cwd=None, **kw):
         raise OSError("cannot write settings")
 
     (delegate,) = make_tools(FakeBackend([]), reg, settings_for, steps=steps)
@@ -369,7 +369,7 @@ class FakeBudget:
 def test_every_errand_runs_against_the_backends_time_budget():
     b, budget = FakeBackend([BackendResult("ok", "x")]), FakeBudget()
     b.timeout = 900
-    (delegate,) = make_tools(b, Registry(), lambda sid: f"/settings/{sid}.json", budget=budget)
+    (delegate,) = make_tools(b, Registry(), lambda sid, **kw: f"/settings/{sid}.json", budget=budget)
     run(delegate(make_params()[0], "find t-shirts"))
     sid = b.calls[0]["sid"]
     assert budget.calls == [("start", sid, 900), ("finish", sid)]
@@ -381,7 +381,7 @@ def test_a_cancelled_errand_still_closes_its_budget():
             raise asyncio.CancelledError
 
     budget = FakeBudget()
-    (delegate,) = make_tools(Cancelled([]), Registry(), lambda sid: f"/settings/{sid}.json", budget=budget)
+    (delegate,) = make_tools(Cancelled([]), Registry(), lambda sid, **kw: f"/settings/{sid}.json", budget=budget)
     with pytest.raises(asyncio.CancelledError):
         run(delegate(make_params()[0], "find t-shirts"))
     assert [c[0] for c in budget.calls] == ["start", "finish"]
@@ -390,12 +390,12 @@ def test_a_cancelled_errand_still_closes_its_budget():
 def test_an_old_errand_resumes_even_after_other_errands_and_a_restart(tmp_path):
     db = tmp_path / "harness.db"
     b = FakeBackend([BackendResult("tees"), BackendResult("weather"), BackendResult("best is Levi's")])
-    (delegate,) = make_tools(b, Registry(db), lambda sid: None)
+    (delegate,) = make_tools(b, Registry(db), lambda sid, **kw: None)
     p, out = make_params()
     run(delegate(p, "find t-shirts"))
     tees = out[-1]["errand"]
     run(delegate(make_params()[0], "weather"))
-    (delegate,) = make_tools(b, Registry(db), lambda sid: None)  # backend restarted: fresh tools, same db
+    (delegate,) = make_tools(b, Registry(db), lambda sid, **kw: None)  # backend restarted: fresh tools, same db
     p, out = make_params()
     run(delegate(p, "which had the best rating?", errand=tees))
     assert b.calls[2]["sid"] == b.calls[0]["sid"] and b.calls[2]["resume"] is True
@@ -449,8 +449,8 @@ def test_one_errand_at_a_time_for_the_whole_process_and_never_the_same_one_twice
     async def go():
         gate, reg, lock = asyncio.Event(), Registry(), errand_lock()
         b = GatedBackend(gate)
-        (first,) = make_tools(b, reg, lambda sid: None, lock=lock)
-        (second,) = make_tools(b, reg, lambda sid: None, lock=lock)  # another session's tools
+        (first,) = make_tools(b, reg, lambda sid, **kw: None, lock=lock)
+        (second,) = make_tools(b, reg, lambda sid, **kw: None, lock=lock)  # another session's tools
         p1, out1 = make_params()
         t = asyncio.create_task(first(p1, "first"))
         await asyncio.sleep(0)

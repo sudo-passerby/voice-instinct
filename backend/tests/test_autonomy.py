@@ -230,6 +230,16 @@ def test_the_repo_outside_home_is_protected_with_an_absolute_rule():
     assert "Edit(//opt/app/**)" in s["permissions"]["deny"] and "/opt/app" in s["sandbox"]["filesystem"]["denyWrite"]
 
 
+def test_an_errand_cannot_rewrite_the_browsers_snapshot_files():
+    # The purchase guard reads <cwd>/.playwright-mcp/page-*.yml (hooks.py): a hijacked agent must not rename
+    # "Pay" to "Continue" there before a click. Playwright MCP writes them from outside the sandbox.
+    cwd = HOME / ".voice-instinct/workspace/trip-abc123"
+    s = sandbox_settings(HOME, APP, DATA, cwd=cwd)
+    assert "Edit(~/.voice-instinct/workspace/trip-abc123/.playwright-mcp/**)" in s["permissions"]["deny"]
+    assert "~/.voice-instinct/workspace/trip-abc123/.playwright-mcp" in s["sandbox"]["filesystem"]["denyWrite"]
+    assert not any(".playwright-mcp" in r for r in sandbox_settings(HOME, APP, DATA)["permissions"]["deny"])
+
+
 def test_the_nightly_run_has_no_shell():
     # Its Edit denies hold for its own edits, but a shell could still delete memory files or .git (a failed run
     # that "deleted a file via the shell" would then be beyond the rollback). It needs none: git is consolidate.py's.

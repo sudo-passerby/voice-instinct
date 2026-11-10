@@ -59,8 +59,9 @@ class World:
         self.folders = self.fresh_folders()
         self.backend, self.grants = Backend(), []
 
-        def settings_for(sid, debug_cwd=None, grant=None):
+        def settings_for(sid, debug_cwd=None, grant=None, cwd=None):
             self.grants.append(grant)
+            self.cwds = getattr(self, "cwds", []) + [cwd]
             return None
 
         (self.delegate,) = make_tools(self.backend, self.reg, settings_for, workspace_root=self.ws, home=self.home,
@@ -286,6 +287,12 @@ def test_allow_and_revoke_keep_the_entries_load_skipped(w):
     assert raw[:3] == kept and [g["access"] for g in raw[3:] if g["path"] == str(w.home / "Documents")] == ["read"]
     assert w.folders.revoke((w.home / "Documents").resolve()) == 1
     assert json.loads(f.read_text())["grants"] == kept + [{"path": str(w.home / "Desktop"), "access": "read"}]
+
+
+def test_every_run_gets_its_own_folder_for_the_snapshot_denies(w):
+    out, _ = w.go(w.delegate, "find flights")
+    assert w.cwds[-1] == w.backend.calls[-1]["cwd"]
+    assert (Path(w.cwds[-1]) / ".playwright-mcp").is_dir()  # made first, so the sandbox has a path to deny
 
 
 def test_a_refused_errand_leaves_no_empty_workspace_folder(w):

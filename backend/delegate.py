@@ -173,6 +173,10 @@ def make_tools(backend, registry, settings_for, on_finish=None, workspace_root=N
                 budget.start(sid, getattr(backend, "timeout", 300))
             try:  # setup too: once "started" is said, the errand must always report back
                 extra = {"grant": grant} if grant else {}  # enforced in the run's own settings (autonomy.py)
+                # The browser's snapshots, read by the purchase guard, are denied to the agent (autonomy.py); made
+                # now so the sandbox has a real path to deny.
+                (wd / ".playwright-mcp").mkdir(parents=True, exist_ok=True)
+                extra["cwd"] = str(wd)
                 if steps:  # debug mode: a browser of our own and every step recorded (steps.py)
                     mcp = await steps.start(sid, str(wd))
                     settings = settings_for(sid, str(wd), **extra)
