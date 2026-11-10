@@ -22,6 +22,43 @@ GONE = "That errand can't be continued: its session is gone. Start it again?"
 _DELETE_WORDS = re.compile(r"\b(delete|remove|erase|wipe|trash|get rid of|throw away)\b", re.I)
 
 
+# Nova never pays (autonomy.PAYMENT_HOSTS): an errand never gets what pays, so no hostile page can talk it out of it.
+NO_PAYMENT_DETAILS = "I don't take card or UPI details; I'll get you to checkout and you pay."
+_CARD = re.compile(r"(?<![\d./_-])\d(?:[ ./_-]?\d){12,18}(?![\d./_-])")  # 13 to 19 digits; spaces, dots, dashes, slashes
+_SECRETS = re.compile(
+    r"\b(cvv2?|cvc2?|cvn|csc|security\s+code|card\s+verification\s+(value|code))\b\D{0,20}\d{3,4}\b"
+    r"|\b(upi\s*pin|m-?pin)\b\D{0,20}\d{4,6}\b"  # never a bare "pin": "pin code 560001" is an address
+    r"|\b(otp|one[- ]time\s+(password|passcode|code|pin)|verification\s+code)\b\D{0,20}\d{4,8}\b"
+    r"|\b(net\s*-?\s*banking|internet\s+banking|bank(ing)?)\s+(login\s+)?(password|passcode|pwd)\s*(is\b|:|=)\s*\S",
+    re.I)
+
+
+# Not card details, Luhn or not: Amazon's order format, and a number labelled as an order, shipment or booking.
+_ORDER_FORMAT = re.compile(r"\d{3}-\d{7}-\d{7}")
+_ORDER_LABEL = re.compile(r"(\b(order(\s+(no\.?|number|id))?|tracking(\s+(no\.?|number|id))?|awb|pnr|booking\s+id|ref(erence)?(\s+(no\.?|number|id))?|invoice(\s+(no\.?|number))?|ticket(\s+(no\.?|number|id))?|consignment(\s+(no\.?|number))?|shipment(\s+(no\.?|number|id))?)\s*:?\s*#?|#)\s*$", re.I)
+# Still card details whatever the label: "card" just before it, or an expiry date just after.
+_CARD_LABEL = re.compile(r"\bcard\b\D{0,20}$", re.I)
+_EXPIRY = re.compile(r"^\D{0,20}\b(exp\w*|valid\s+(thru|till|until))\b\D{0,5}\d{1,2}\s*/\s*\d{2,4}", re.I)
+
+
+def _luhn(digits: str) -> bool:
+    total = 0
+    for i, c in enumerate(reversed(digits)):
+        d = int(c) * (2 if i % 2 else 1)
+        total += d - 9 if d > 9 else d
+    return total % 10 == 0
+
+
+def payment_details(text: str) -> bool:
+    """A card number (Luhn-valid), a CVV/CVC, a UPI PIN, an OTP or a netbanking password, with its value.
+    ponytail: an unlabelled 13-19 digit Luhn-valid run counts, so 1 in 10 bare order numbers is refused too."""
+    text = text or ""
+    cards = (re.sub(r"\D", "", m.group(0)) for m in _CARD.finditer(text)
+             if _CARD_LABEL.search(text[:m.start()]) or _EXPIRY.search(text[m.end():])
+             or not (_ORDER_FORMAT.fullmatch(m.group(0)) or _ORDER_LABEL.search(text[:m.start()])))
+    return any(_luhn(c) for c in cards) or bool(_SECRETS.search(text))
+
+
 def _asked_to_delete(params) -> bool:
     ctx = getattr(params, "context", None)
     return bool(ctx) and bool(_DELETE_WORDS.search(last_user_text(ctx.get_messages())))
@@ -89,6 +126,10 @@ def make_tools(backend, registry, settings_for, on_finish=None, workspace_root=N
             errand: The errand id from an earlier result, to continue that errand; 0 for a new errand.
             access: What the errand may do in that folder: "read" (default), "write" (read and change, never delete), or "delete" only when the user's own words ask to delete something.
         """
+        if payment_details(task):  # before anything is made or run for it
+            await params.result_callback({"status": "refused", "errand": errand, "result": NO_PAYMENT_DETAILS,
+                                          "instruction": "Tell the user exactly this, in one short sentence."})
+            return
         if state["running"]:
             prior = registry.get_task(errand) if errand else None
             if prior and prior["session_id"] == state["sid"]:  # resuming it now would run it twice
@@ -174,9 +215,20 @@ def make_tools(backend, registry, settings_for, on_finish=None, workspace_root=N
             try:  # setup too: once "started" is said, the errand must always report back
                 extra = {"grant": grant} if grant else {}  # enforced in the run's own settings (autonomy.py)
                 # The browser's snapshots, read by the purchase guard, are denied to the agent (autonomy.py); made
-                # now so the sandbox has a real path to deny.
-                (wd / ".playwright-mcp").mkdir(parents=True, exist_ok=True)
+                # now so the sandbox has a real path to deny. Only in the private workspace: never in a folder of the
+                # user's (an errand from before grants), and a folder that can't be made never fails the errand.
+                made = False
+                if wd.resolve().is_relative_to(workspace_root.resolve()):
+                    try:
+                        (wd / ".playwright-mcp").mkdir(parents=True, exist_ok=True)
+                        made = True
+                    except OSError as e:
+                        logger.warning(f"no snapshot folder for {sid[:8]}: {e!r}")
                 extra["cwd"] = str(wd)
+                if not made:
+                    extra["snapshot_dir_made"] = False  # its Edit deny stays; the sandbox's write deny can't
+                if bridge and made:  # the only folder whose snapshots the guard reads for this run (hooks.py)
+                    bridge.register_run(sid, wd)
                 if steps:  # debug mode: a browser of our own and every step recorded (steps.py)
                     mcp = await steps.start(sid, str(wd))
                     settings = settings_for(sid, str(wd), **extra)
@@ -202,6 +254,8 @@ def make_tools(backend, registry, settings_for, on_finish=None, workspace_root=N
                         logger.error(f"debug record not finished: {e!r}")
                 if budget:
                     budget.finish(sid)
+                if bridge:
+                    bridge.register_run(sid, None)
                 if on_finish:  # a run that ended can no longer use an answer
                     on_finish(sid)
             if resume and res.is_error and "No conversation found" in res.text:

@@ -79,6 +79,8 @@ def test_the_browsers_code_running_tools_are_denied_in_every_mode():
     assert "mcp__browser__browser_run_code_unsafe" in deny and "mcp__browser__browser_file_upload" in deny
     # browser_evaluate runs model-written JS in the page: it could click "Pay" past the purchase guard (hooks.py).
     assert "mcp__browser__browser_evaluate" in deny
+    # browser_drop with paths reads local files into the page from outside the sandbox, like file_upload.
+    assert "mcp__browser__browser_drop" in deny
 
 
 def test_the_shell_cannot_reach_any_host_beyond_the_hook_port():
@@ -238,6 +240,11 @@ def test_an_errand_cannot_rewrite_the_browsers_snapshot_files():
     assert "Edit(~/.voice-instinct/workspace/trip-abc123/.playwright-mcp/**)" in s["permissions"]["deny"]
     assert "~/.voice-instinct/workspace/trip-abc123/.playwright-mcp" in s["sandbox"]["filesystem"]["denyWrite"]
     assert not any(".playwright-mcp" in r for r in sandbox_settings(HOME, APP, DATA)["permissions"]["deny"])
+    # A folder delegate could not make it in (an old errand's, of the user's): the Edit deny only, since the
+    # sandbox needs a real path to deny writes to.
+    s = sandbox_settings(HOME, APP, DATA, cwd=cwd, snapshot_dir_made=False)
+    assert "Edit(~/.voice-instinct/workspace/trip-abc123/.playwright-mcp/**)" in s["permissions"]["deny"]
+    assert not any(".playwright-mcp" in p for p in s["sandbox"]["filesystem"]["denyWrite"])
 
 
 def test_the_nightly_run_has_no_shell():
@@ -255,3 +262,57 @@ def test_the_nightly_run_gets_the_same_protections():
     from autonomy import consolidation_settings
     rules = consolidation_settings(HOME, APP, DATA)["permissions"]["deny"]
     assert "Edit(~/voice-agent/**)" in rules and "Read(~/**/.env)" in rules and "Edit(~/.bashrc)" in rules
+
+
+GATEWAYS = ("api.razorpay.com", "checkout.razorpay.com", "secure.payu.in", "www.payumoney.com", "securegw.paytm.in",
+            "secure.ccavenue.com", "pgi.billdesk.com", "api.juspay.in", "sdk.cashfree.com", "mercury.phonepe.com",
+            "pay.easebuzz.in", "www.instamojo.com", "checkout.stripe.com", "js.stripe.com", "api.stripe.com",
+            "www.paypal.com", "checkoutshopper-live.adyen.com", "api.braintreegateway.com", "api.checkout.com",
+            "secure.worldpay.com", "pay.google.com", "payments.amazon.in", "pay.amazon.com")
+
+
+def _glob_matches(pattern, url):
+    """Playwright's originOrHostGlob + globToRegexPattern (coreBundle.js), enough for host patterns."""
+    import re
+    m = re.match(r"^(https?://[^/:]+):\*$", pattern)
+    glob = f"{m.group(1)}:*/**" if m else (pattern + "/**" if "://" in pattern else f"*://{pattern}/**")
+    rx = "^" + "".join("(.*)" if t == "**" else "([^/]*)" if t == "*" else re.escape(t)
+                       for t in re.findall(r"\*\*|\*|[^*]+", glob)) + "$"
+    return re.match(rx, url) is not None
+
+
+def test_the_errand_browser_can_never_reach_a_payment_gateway(tmp_path):
+    # Nova never pays: the errand browser blocks the gateways' origins (Playwright MCP's own glob format).
+    from autonomy import BLOCKED_ORIGINS, PAYMENT_HOSTS
+    _install_browser(tmp_path)
+    for server in (browser_mcp(tmp_path), browser_mcp(tmp_path, cdp_endpoint="http://127.0.0.1:9")):
+        args = server["mcpServers"]["browser"]["args"]
+        blocked = args[args.index("--blocked-origins") + 1].split(";")
+        assert blocked == BLOCKED_ORIGINS.split(";") and "--no-webmcp" in args
+        for host in GATEWAYS:
+            assert any(_glob_matches(b, f"https://{host}/v1/pay") for b in blocked), host
+        for host in ("www.amazon.in", "www.flipkart.com", "www.google.com", "maps.google.com", "razorpay.com.evil.in"):
+            assert not any(_glob_matches(b, f"https://{host}/") for b in blocked), host
+    assert all(h in BLOCKED_ORIGINS for h in PAYMENT_HOSTS)
+
+
+def test_a_gateway_is_blocked_even_behind_a_redirect(tmp_path):
+    # --blocked-origins does not see redirects (Playwright MCP's own docs; confirmed with 0.0.83): the browser's
+    # resolver refuses the gateways' hosts too, through a config file the agent can't write (browser/ is denied).
+    import json as _json
+    from autonomy import resolver_rules
+    _install_browser(tmp_path)
+    args = browser_mcp(tmp_path)["mcpServers"]["browser"]["args"]
+    cfg = Path(args[args.index("--config") + 1])
+    assert cfg.parent == tmp_path / ".voice-instinct/browser"
+    assert _json.loads(cfg.read_text())["browser"]["launchOptions"]["args"] == [f"--host-resolver-rules={resolver_rules()}"]
+    rules = resolver_rules()
+    assert "MAP *.razorpay.com ~NOTFOUND" in rules and "MAP razorpay.com ~NOTFOUND" in rules
+    assert "MAP pay.google.com ~NOTFOUND" in rules and "MAP *.google.com" not in rules
+
+
+def test_a_payment_host_is_blocked_with_a_trailing_dot_too():
+    # "api.razorpay.com." is the same site; live review 2026-11-10 loaded Razorpay Checkout through it
+    from autonomy import resolver_rules
+    rules = resolver_rules()
+    assert "MAP *.razorpay.com ~NOTFOUND" in rules and "MAP *.razorpay.com. ~NOTFOUND" in rules

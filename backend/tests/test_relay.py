@@ -1,4 +1,5 @@
 import asyncio
+import json
 from types import SimpleNamespace
 
 from hooks import HookBridge
@@ -150,8 +151,8 @@ def _guarded(element, said, snapshot=None, target="e3"):
     async def go():
         reg, relay, task, ctx, bridge = setup("hi")
         if snapshot:
-            bridge.note_page({"session_id": "s1", "tool_name": "mcp__browser__browser_snapshot",
-                              "tool_response": snapshot})
+            await bridge.note_page({"session_id": "s1", "tool_name": "mcp__browser__browser_snapshot",
+                              "tool_response": f"### Snapshot\n```yaml\n{snapshot}\n```"})
         t = asyncio.create_task(bridge.on_pre_tool_use({
             "session_id": "s1", "cwd": "/w", "tool_name": "mcp__browser__browser_click",
             "tool_input": {"element": element, "target": target}}))
@@ -167,15 +168,38 @@ def _guarded(element, said, snapshot=None, target="e3"):
     return run(go())
 
 
+def _on_page(name, said):
+    """A guarded click on a button the page itself names `name` (the agent calls it "Continue")."""
+    return _guarded("Continue", said, f"- button {json.dumps(name, ensure_ascii=False)} [ref=e3]")
+
+
 def test_cancel_or_stop_approve_a_guarded_click_only_when_its_real_target_cancels_or_stops():
-    assert _guarded("Cancel subscription", "yes, cancel it") == "allow"
-    assert _guarded("Unsubscribe from the paid subscription", "yes, stop it") == "allow"
-    assert _guarded("End subscription", "yeah, cancel") == "allow"
-    assert _guarded("Pay & stop ads", "yes, stop") == "deny"
-    assert _guarded("Subscription settings: cancel", "yes, cancel it") == "deny"  # must start with it
-    assert _guarded("Cancellation subscription", "yes, cancel") == "deny"  # whole words
+    assert _on_page("Cancel subscription", "yes, cancel it") == "allow"
+    assert _on_page("Unsubscribe from the paid subscription", "yes, stop it") == "allow"
+    assert _on_page("End subscription", "yeah, cancel") == "allow"
+    assert _on_page("Cancel my order", "yes, cancel it") == "allow"
+    assert _on_page("Cancel order #40213", "yes, cancel it") == "allow"  # a number, but no price
+    assert _on_page("Pay & stop ads", "yes, stop") == "deny"
+    assert _on_page("Subscription settings: cancel", "yes, cancel it") == "deny"  # must start with it
+    assert _on_page("Cancellation subscription", "yes, cancel") == "deny"  # whole words
     for word in ("cancel", "stop"):  # a bare one is still no
-        assert _guarded("Cancel subscription", word) == "deny"
+        assert _on_page("Cancel subscription", word) == "deny"
+
+
+def test_a_cancel_word_never_approves_a_name_that_also_pays():
+    for name in ("Stop & Pay ₹500", "Cancel anytime – Subscribe ₹499", "End-of-season sale: Buy now",
+                 "Cancel subscription and pay ₹99 fee", "Stop free trial – continue Premium ₹199/mo",
+                 "End trial & start membership ₹999", "End trial, €5 a month"):
+        assert _on_page(name, "yes, cancel it") == "deny", name
+        assert _on_page(name, "yes") == "allow", name  # a plain yes still approves any question
+
+
+def test_without_the_pages_own_name_the_agents_words_never_make_it_a_cancel_question():
+    # No node for the ref: "Cancel order" is only the agent's description. The node is nameless (a name over 900
+    # characters is left out): no cancel question; a step whose ref is not on the page at all is never asked
+    # (hooks.RESNAPSHOT).
+    assert _guarded("Cancel order", "yes, cancel it", "- button [ref=e3]") == "deny"
+    assert _guarded("Cancel order", "yes", "- button [ref=e3]") == "allow"
     # The page's own name wins over the agent's words, either way round.
     snap = '- button "Pay ₹499 and stop ads" [ref=e3]\n- button "Cancel subscription" [ref=e4]'
     assert _guarded("Cancel subscription", "yes, cancel it", snap, target="e3") == "deny"

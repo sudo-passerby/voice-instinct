@@ -291,3 +291,21 @@ def test_a_stop_cancelled_again_during_the_grace_period_still_kills_the_group(tm
         if alive:  # never leave the test's own processes behind
             os.killpg(leader, signal.SIGKILL)
     assert not alive
+
+
+def test_every_errand_stops_at_checkout_and_hands_over_what_the_user_needs_to_pay():
+    from claude_cli import ERRAND_GUIDANCE as g
+    for must in ("never complete a payment", "paid order", "paid booking", "stop", "exact page link", "total",
+                 "fresh browser profile"):
+        assert must in g, must
+
+
+def test_the_front_model_hands_checkout_to_the_user():
+    import ast
+    from pathlib import Path
+    tree = ast.parse((Path(__file__).parent.parent / "bot.py").read_text())
+    (node,) = [n for n in tree.body if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") == "SYSTEM_PROMPT"]
+    text = "".join(c.value for c in ast.walk(node.value) if isinstance(c, ast.Constant) and isinstance(c.value, str))
+    for must in ("never pay", "ready for them to finish", "send_telegram", "their own browser",
+                 "card or UPI details", "free"):
+        assert must in text, must

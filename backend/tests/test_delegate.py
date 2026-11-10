@@ -465,3 +465,47 @@ def test_one_errand_at_a_time_for_the_whole_process_and_never_the_same_one_twice
     b, out2, out3 = run(asyncio.wait_for(go(), 3))
     assert b.calls == ["first"] and out2[-1]["status"] == "busy" and out3[-1]["status"] == "busy"
     assert "still running" in out3[-1]["instruction"] and "previous" in out2[-1]["instruction"]
+
+
+@pytest.mark.parametrize("task", [
+    "Buy the blue kettle, my card is 4111 1111 1111 1111 exp 12/29", "use card 4111-1111-1111-1111",
+    "card 378282246310005", "pay with 5555555555554444", "Order it. CVV 123", "the cvc is 4567",
+    "my UPI PIN is 4321", "mpin 123456", "OTP 123456", "the one-time password is 908172",
+    "log in, netbanking password is hunter2", "net banking password: S3cret!",
+    "my card is 4111 1111 1111 1111", "4111111111111111 exp 12/27", "card number: 4111-1111-1111-1111",
+    "order it with 4111111111111111", "card #4111111111111111", "order #4111111111111111 exp 12/27",
+    "booking id 4111111111111111 valid thru 08/29"])
+def test_an_errand_never_gets_card_or_upi_details(task):
+    reg, b, delegate = setup([BackendResult("x")])
+    p, out = make_params()
+    run(delegate(p, task))
+    assert b.calls == [] and reg.list_sessions() == []  # nothing ran, nothing was made
+    assert out[-1]["status"] == "refused"
+    assert out[-1]["result"] == "I don't take card or UPI details; I'll get you to checkout and you pay."
+
+
+@pytest.mark.parametrize("task", [
+    "Track order #40213", "call the shop on +91 98765 43210", "deliver to pin code 560001",
+    "compare plans under 1999 rupees", "flight AI 2025 on 14 March, booking ref 1234 5678 9012 3456",
+    "what does an OTP mean on Paytm?", "how do I reset my netbanking password?", "find the CVV on a card",
+    # Luhn-valid, but labelled as an order or booking, or in Amazon's order format: not card details.
+    "track order 405-1234567-1234504", "order #4111111111111111", "order no: 4111111111111111",
+    "order number 4111 1111 1111 1111", "order id 4111111111111111", "tracking 4111111111111111",
+    "AWB: 4111111111111111", "PNR 4111111111111111", "booking id 4111111111111111", "#4111111111111111"])
+def test_ordinary_numbers_and_questions_about_payments_still_run(task):
+    reg, b, delegate = setup([BackendResult("x")])
+    p, out = make_params()
+    run(delegate(p, task))
+    assert len(b.calls) == 1 and out[-1]["status"] == "done", task
+
+
+import pytest as _pytest
+
+
+@_pytest.mark.parametrize("text,refused", [
+    ("card 4111.1111.1111.1111", True), ("pay with 4111/1111/1111/1111", True), ("security code 123", True),
+    ("verification code 482193", True), ("tracking id 4111111111111111", False), ("invoice no 4111111111111111", False),
+    ("ticket number 4111111111111111", False), ("ref no 4111111111111111", False), ("call +91 98450 12345", False)])
+def test_card_details_in_any_separator_are_refused_and_labelled_references_are_not(text, refused):
+    from delegate import payment_details
+    assert payment_details(text) is refused

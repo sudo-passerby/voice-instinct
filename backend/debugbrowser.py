@@ -15,6 +15,7 @@ from pathlib import Path
 
 import aiohttp
 
+from autonomy import resolver_rules
 from claude_cli import _agent_env
 
 # A subset of Playwright's own chromiumSwitches, so this browser is no weaker than the normal errand one:
@@ -53,7 +54,8 @@ async def launch(exe, timeout=10, hide_env=()):
     profile = tempfile.mkdtemp(prefix="vi-browser-")
     try:
         proc = await asyncio.create_subprocess_exec(
-            str(exe), f"--user-data-dir={profile}", "--remote-debugging-port=0", *_SWITCHES, "about:blank",
+            str(exe), f"--user-data-dir={profile}", "--remote-debugging-port=0", *_SWITCHES,
+            f"--host-resolver-rules={resolver_rules()}", "about:blank",  # Nova never pays (autonomy.PAYMENT_HOSTS)
             stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
             env=_agent_env(("TELEGRAM_CHAT_ID", *hide_env)),
             start_new_session=True)
