@@ -216,7 +216,7 @@ def test_code_that_runs_outside_the_sandbox_later_cannot_be_changed():
               "~/.voice-instinct/qwen-asr", "~/.config/autostart", "~/.config/systemd", "~/.local/bin"):
         assert f"Edit({d}/**)" in rules and d in deny_write, d
         assert f"Read({d}/**)" not in rules  # still readable
-    for f in ("~/.bashrc", "~/.zshrc", "~/.profile", "~/.bash_profile", "~/.zprofile"):
+    for f in ("~/.bashrc", "~/.zshrc", "~/.profile", "~/.bash_profile", "~/.zprofile", "~/.gitconfig"):
         assert f"Edit({f})" in rules and f in deny_write, f
     assert "Edit(~/**/.claude/**)" in rules and "Edit(~/**/CLAUDE*.md)" in rules
     # Git hooks and direnv files run code later, outside the sandbox: never writable, granted folder or not.

@@ -248,6 +248,52 @@ def test_bad_hand_edited_entries_are_ignored(w):
     assert w.folders.load() == []  # unreadable: no standing grants, never a crash
 
 
+@pytest.mark.parametrize("raw", [{"grants": 5}, {"grants": "x"}, {"grants": [5, None, ["a"]]},
+                                 {"grants": [{"path": "/home/u/Doc\u0000uments", "access": "read"}]},
+                                 {"grants": [{"path": "~/Documents", "access": ["read"]}]},
+                                 {"grants": [{"path": "~/Documents", "access": {"read": 1}}]},
+                                 {"grants": [{"path": 5, "access": "read"}]}, [1, 2], "grants"])
+def test_any_bad_hand_edit_is_ignored_never_raised_and_the_errand_still_runs(w, raw):
+    f = w.home / ".voice-instinct" / "folders.json"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps(raw))
+    assert w.folders.load() == []
+    out, _ = w.go(w.delegate, "read the plan", "~/Documents/trip", reply="yes")
+    assert out[-1]["status"] == "done"
+
+
+def test_allow_and_revoke_keep_the_entries_load_skipped(w):
+    f = w.home / ".voice-instinct" / "folders.json"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    kept = [{"path": str(w.home / ".ssh"), "access": "read"}, "junk", {"path": "~/Music", "access": "delete"}]
+    f.write_text(json.dumps({"grants": kept + [{"path": str(w.home / "Desktop"), "access": "read"}]}))
+    w.folders.allow((w.home / "Documents").resolve(), "write")
+    raw = json.loads(f.read_text())["grants"]
+    assert raw[:3] == kept and {g["path"] for g in raw[3:]} == {str(w.home / "Desktop"), str(w.home / "Documents")}
+    w.folders.allow((w.home / "Documents").resolve(), "read")  # replaces its own entry, nothing else
+    raw = json.loads(f.read_text())["grants"]
+    assert raw[:3] == kept and [g["access"] for g in raw[3:] if g["path"] == str(w.home / "Documents")] == ["read"]
+    assert w.folders.revoke((w.home / "Documents").resolve()) == 1
+    assert json.loads(f.read_text())["grants"] == kept + [{"path": str(w.home / "Desktop"), "access": "read"}]
+
+
+def test_a_refused_errand_leaves_no_empty_workspace_folder(w):
+    out, _ = w.go(w.delegate, "read the plan", "~/Documents/trip", reply="no")
+    assert out[-1]["status"] == "refused"
+    assert not w.ws.exists() or list(w.ws.iterdir()) == []
+    out, _ = w.go(w.delegate, "look", "~/.ssh")
+    assert out[-1]["status"] == "refused" and (not w.ws.exists() or list(w.ws.iterdir()) == [])
+    out, _ = w.go(w.delegate, "look", access="everything")
+    assert out[-1]["status"] == "error" and (not w.ws.exists() or list(w.ws.iterdir()) == [])
+
+
+@pytest.mark.parametrize("bad", ["~/bin", "~/bin/tools"])
+def test_bin_is_never_grantable(w, bad):
+    (w.home / "bin").mkdir()
+    out, asked = w.go(w.delegate, "look", bad)
+    assert asked == [] and out[-1]["status"] == "refused"
+
+
 @pytest.mark.parametrize("bad", ["/etc", "~", "~/.config", "~/.local/share/x", "~/.ssh", "~/Documents/.git",
                                  "~/voice-instinct", "~/voice-instinct/backend", "~/.voice-instinct",
                                  "~/.voice-instinct/memory", "~/../elsewhere"])
@@ -278,6 +324,8 @@ def test_delete_is_asked_for_only_when_the_user_said_delete(w):
     assert q["prompt"] == "Can I delete files in ~/Documents/trip for this errand? I'll ask you before each delete."
     assert w.grants[-1][1] == "delete" and out[-1]["status"] == "done"
     assert w.fresh_folders().load() == []  # "always" to a delete question counts as once
+    started = next(r for r in out if r["status"] == "started")
+    assert "only for this errand, never always" in started["instruction"]  # and the user is told so aloud (spec §3)
 
 
 def test_a_grant_up_front_is_saved_only_after_the_users_own_yes(w):

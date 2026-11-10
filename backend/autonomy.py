@@ -23,7 +23,8 @@ _SECRET_GLOBS = ("**/.env", "**/.env.*")
 # Code and settings that run outside the sandbox later (login, a shell, autostart, the next Claude session):
 # readable, never writable. Plus, under data_dir, the programs install.sh put there.
 _RUNS_LATER_DIRS = (".config/autostart", ".config/systemd", ".local/bin")
-_RUNS_LATER_FILES = (".bashrc", ".zshrc", ".profile", ".bash_profile", ".zprofile")
+_RUNS_LATER_FILES = (".bashrc", ".zshrc", ".profile", ".bash_profile", ".zprofile",
+                     ".gitconfig")  # git config: core.pager, aliases and hooksPath run code later
 _DATA_CODE = ("node", "browser", "models", "qwen-asr")
 # Any Claude settings or instructions under home, at any depth (Claude Code loads them; see consolidation_settings).
 # Edit rules only: Linux's sandbox ignores these wildcards in denyWrite, but the sandbox protects .claude

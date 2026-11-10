@@ -44,6 +44,8 @@ def refusal(p: Path, home, data_dir, repo_root, workspace_root):
         return None  # the private workspace needs no grant
     if any(part.startswith(".") for part in p.relative_to(home).parts):
         return "I can't use hidden folders, they hold settings."  # ~/.config, ~/.local, ~/.ssh, ...
+    if p.is_relative_to(home / "bin"):  # on the PATH: a script written there runs outside the sandbox later
+        return NOT_GRANTABLE
     for own in (repo, data):  # either way round: a parent of them would expose them too
         if p.is_relative_to(own) or own.is_relative_to(p):
             return NOT_GRANTABLE
@@ -59,8 +61,8 @@ class Folders:
     def refusal(self, p: Path):
         return refusal(p, *self._where)
 
-    def load(self) -> list[dict]:
-        """Every valid standing grant, read fresh. A bad hand-edited entry is ignored and logged."""
+    def _raw(self) -> list:
+        """The file's grants list as written, hand edits and all; [] if it is missing, unreadable or not a list."""
         try:
             data = json.loads(self.path.read_text())
         except FileNotFoundError:
@@ -68,15 +70,33 @@ class Folders:
         except (OSError, ValueError) as e:
             logger.warning(f"folders.json unreadable, no standing grants: {type(e).__name__}")
             return []
+        grants = data.get("grants", []) if isinstance(data, dict) else None
+        if not isinstance(grants, list):
+            logger.warning("folders.json: no grants list, no standing grants")
+            return []
+        return grants
+
+    def _valid(self, g):
+        """(grant, None) with its path resolved, or (None, why) for a bad entry. Never raises."""
+        if not (isinstance(g, dict) and isinstance(g.get("path"), str) and isinstance(g.get("access"), str)
+                and g["access"] in STORED and "\0" not in g["path"]):
+            return None, "not a {path, access} entry"
+        try:
+            p = Path(g["path"]).expanduser().resolve()
+        except (OSError, ValueError, RuntimeError) as e:  # RuntimeError: a symlink loop, or ~user unknown
+            return None, type(e).__name__
+        why = self.refusal(p)
+        return (None, why) if why else ({**g, "path": str(p)}, None)
+
+    def load(self) -> list[dict]:
+        """Every valid standing grant, read fresh. A bad hand-edited entry is ignored and logged."""
         out = []
-        for g in data.get("grants", []) if isinstance(data, dict) else []:
-            ok = isinstance(g, dict) and isinstance(g.get("path"), str) and g.get("access") in STORED
-            p = Path(g["path"]).expanduser().resolve() if ok else None
-            why = self.refusal(p) if ok else "not a {path, access} entry"
+        for g in self._raw():
+            ok, why = self._valid(g)
             if why:
                 logger.warning(f"folders.json: ignoring {g!r}: {why}")
-                continue
-            out.append({**g, "path": str(p)})
+            else:
+                out.append(ok)
         return out
 
     def access(self, folder: Path):
@@ -84,16 +104,22 @@ class Folders:
         hits = [g for g in self.load() if Path(folder).is_relative_to(g["path"])]
         return max(hits, key=lambda g: len(g["path"]))["access"] if hits else None
 
+    def _matching(self, g, test) -> bool:
+        ok, _ = self._valid(g)
+        return bool(ok) and test(Path(ok["path"]))
+
     def allow(self, folder: Path, access: str):
+        """Save a standing grant, replacing this folder's own; every other entry is written back as it was,
+        even one load() skips (the user may be mid-way through a hand edit)."""
         assert access in STORED, access  # delete is never standing
-        grants = [g for g in self.load() if g["path"] != str(folder)]
+        grants = [g for g in self._raw() if not self._matching(g, lambda p: p == Path(folder))]
         grants.append({"path": str(folder), "access": access, "since": time.strftime("%Y-%m-%dT%H:%M:%S%z")})
         self._write(grants)
 
     def revoke(self, folder: Path) -> int:
-        """Drop the grants for this folder and everything under it; how many went."""
-        grants = self.load()
-        keep = [g for g in grants if not Path(g["path"]).is_relative_to(folder)]
+        """Drop the grants for this folder and everything under it; how many went. Other entries stay as written."""
+        grants = self._raw()
+        keep = [g for g in grants if not self._matching(g, lambda p: p.is_relative_to(folder))]
         if len(keep) != len(grants):
             self._write(keep)
         return len(grants) - len(keep)

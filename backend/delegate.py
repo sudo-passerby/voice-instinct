@@ -44,19 +44,19 @@ def make_tools(backend, registry, settings_for, on_finish=None, workspace_root=N
 
     async def grant_for(params, sid, wd, folder, access, held):
         """The (folder, access) this run may use, after asking the user if no grant covers it yet; or a refusal
-        to say. held: this errand's own "once" grant."""
+        to say, and a note for the user. held: this errand's own "once" grant."""
         why = folders.refusal(folder)
         if why:
-            return None, why
+            return None, why, None
         mine = held["access"] if held and folder.is_relative_to(held["folder"]) else None
         have = max((a for a in (mine, folders.access(folder) if access in STORED else None) if a),
                    key=LEVELS.get, default=None)
         if covers(have, access):  # a resume repeating its folder keeps the higher access it already holds
-            return (folder, max(access, mine, key=LEVELS.get) if mine else access), None
+            return (folder, max(access, mine, key=LEVELS.get) if mine else access), None, None
         if access == "delete" and not _asked_to_delete(params):
-            return None, "I only delete files when you ask me to delete something."
+            return None, "I only delete files when you ask me to delete something.", None
         if bridge is None:
-            return None, "I can't ask you about that folder right now, so I'll only use my own workspace."
+            return None, "I can't ask you about that folder right now, so I'll only use my own workspace.", None
         # A question belongs to a session: this errand's (a refused one stays recorded as one).
         registry.upsert_session(sid, origin="delegated", mode="headless", cwd=str(wd))
         # Intermediate result first (as for "started" below), so the model waits for the question.
@@ -66,11 +66,14 @@ def make_tools(backend, registry, settings_for, on_finish=None, workspace_root=N
         answer = await bridge.ask(sid, "folder", question(folder, access, home), "delegate",
                                   {"folder": str(folder), "access": access})
         if answer not in ("once", "always"):
-            return None, f"You didn't allow me to use {tilde(folder, home)}, so I didn't start the errand."
+            return None, f"You didn't allow me to use {tilde(folder, home)}, so I didn't start the errand.", None
         if answer == "always" and access in STORED:
             folders.allow(folder, access)  # every later errand, without asking
-        # delete is never standing: an "always" counts as once. Every grant goes in the registry (below).
-        return (folder, access), None
+        # delete is never standing: an "always" counts as once, and the user is told. Every grant goes in the
+        # registry (below).
+        note = (f"Deleting in {tilde(folder, home)} is only for this errand, never always, and I'll still ask "
+                "before each delete." if answer == "always" and access == "delete" else None)
+        return (folder, access), None, note
 
     # Async call (Pipecat: Function Calling > Per-Tool Options): barge-in must not cancel it, and the
     # framework deadline must outlive the folder question (asked first, in the call) plus the backend's own timeout.
@@ -96,7 +99,13 @@ def make_tools(backend, registry, settings_for, on_finish=None, workspace_root=N
                     "status": "busy",
                     "instruction": "Tell the user you are still working on the previous task."})
             return
+        if access not in LEVELS:  # before any folder is made for it
+            await params.result_callback({"status": "error", "errand": errand,
+                                          "result": "Access must be read, write or delete."})
+            return
         state["running"] = True
+        wd = None
+        resume = False
         try:
             new_sid = str(uuid.uuid4())
             try:
@@ -114,8 +123,6 @@ def make_tools(backend, registry, settings_for, on_finish=None, workspace_root=N
                 else:
                     resume, sid = False, new_sid
                     wd = private_workdir(task, sid, workspace_root)
-                if access not in LEVELS:
-                    raise ValueError("Access must be read, write or delete.")
                 held = registry.get_grant(sid)
                 folder = resolve_folder(directory, home) if directory and directory.strip() else None
                 if folder is None and held:  # a resumed errand keeps its grant (asking only to go higher)
@@ -126,13 +133,15 @@ def make_tools(backend, registry, settings_for, on_finish=None, workspace_root=N
                 if folder is not None and folder.is_relative_to(workspace_root.resolve()):
                     folder = None  # the private workspace needs no grant
             except (ValueError, OSError) as e:
+                _drop_if_empty(wd, resume)
                 await params.result_callback({"status": "error", "errand": errand, "result": str(e)})
                 return
             state["sid"] = sid
-            grant = None
+            grant = note = None
             if folder is not None:
-                grant, why = await grant_for(params, sid, wd, folder, access, held)
+                grant, why, note = await grant_for(params, sid, wd, folder, access, held)
                 if grant is None:
+                    _drop_if_empty(wd, resume)  # a refused errand leaves no empty workspace folder
                     session = registry.get_session(sid)
                     if session and not resume:
                         registry.set_state(sid, "ended", end_reason="refused")
@@ -150,7 +159,8 @@ def make_tools(backend, registry, settings_for, on_finish=None, workspace_root=N
             # (source honours it): without it Gemini calls the tool and says nothing, so the user hears silence.
             await params.result_callback(
                 {"status": "started", "errand": task_id, "instruction": "In one short sentence tell the user "
-                 "you've started; you will be told when it's done."},
+                 "you've started; you will be told when it's done." + (
+                     f" Also tell them, in your own words: {note}" if note else "")},
                 properties=FunctionCallResultProperties(run_llm=True, is_final=False))
             mcp = settings = res = None
             if budget:  # the agent is told when it is nearly out of time (budget.py)
@@ -204,6 +214,15 @@ def make_tools(backend, registry, settings_for, on_finish=None, workspace_root=N
             state["running"], state["sid"] = False, None
 
     return [delegate]
+
+
+def _drop_if_empty(wd, resume):
+    """A new errand's own folder, made for a run that never started."""
+    if wd is not None and not resume:
+        try:
+            wd.rmdir()  # only if empty
+        except OSError:
+            pass
 
 
 def _folder_note(grant, home):

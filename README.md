@@ -57,9 +57,10 @@ only, or read and change but never delete. Answer "yes" for just this errand (an
 folder's subfolders, and the most specific one wins. You can also say "you can always read my
 Documents folder" up front, and it still asks you to confirm.
 
-Deleting is asked for only when you say to delete something, is only ever for that one errand, and
-each delete is asked again before it runs. Hidden folders (`~/.config`, `~/.local`, ...), this app's
-own code and data, your whole home folder and anything outside it can never be granted.
+Deleting is asked for only when you say to delete something, is only ever for that one errand (an
+"always" counts as once, and Nova says so), and each delete is asked again before it runs. Hidden
+folders (`~/.config`, `~/.local`, ...), `~/bin`, this app's own code and data, your whole home folder
+and anything outside it can never be granted.
 
 What a grant does not cover yet: it limits what an errand writes, not what it reads. An errand can
 still read files outside its grant (anything but the secrets listed below), without asking. A shell
@@ -69,10 +70,11 @@ granted folder. And deletes are caught only as shell commands (`rm`, `mv`, `find
 program that deletes files itself (`python -c ...`, a script) is not caught inside a folder it may
 change.
 
-Ask "what folders can you access?" to hear the standing grants, and "stop accessing Documents" to
-remove one (no confirmation needed). They live in `~/.voice-instinct/folders.json`, read on every
-errand, so you can also edit it by hand; an entry for a folder that can never be granted is ignored.
-Errands can neither read nor change that file.
+Ask "what folders can you access?" to hear the standing grants, and "stop accessing Documents" to remove
+one (no confirmation needed). They live in `~/.voice-instinct/folders.json`, read on every errand, so
+you can also edit it by hand; an entry for a folder that can never be granted, or one that is malformed,
+is ignored and logged, and kept in the file when Nova saves or removes a grant. Errands can neither read
+nor change that file.
 
 ## How it keeps you in control
 
