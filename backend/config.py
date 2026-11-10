@@ -19,11 +19,6 @@ def is_whisper(engine: str) -> bool:
     return engine.startswith("whisper-")
 
 
-def checks_voice(engine: str) -> bool:
-    """Engines that hand over a finished segment the owner's voice can be checked on (nemotron streams)."""
-    return engine in ("parakeet", "qwen3-asr-gpu") or is_whisper(engine)
-
-
 # config.toml section -> {key in file: Config field}
 _SECTIONS = {
     "assistant": {"name": "name", "awake_timeout": "awake_timeout"},
@@ -35,7 +30,6 @@ _SECTIONS = {
               "permission_timeout": "permission_timeout"},
     "debug": {"browser_steps": "debug_browser_steps"},
     "stt": {"engine": "stt_engine", "language": "stt_language", "keyterms": "stt_keyterms"},
-    "voice": {"threshold": "voice_threshold"},
 }
 
 
@@ -60,7 +54,6 @@ class Config:
     stt_engine: str = "nemotron"  # speech-to-text engine (services.make_stt); install.sh downloads only this one
     stt_language: str = "en"  # Whisper's language code ([stt] language)
     stt_keyterms: list[str] = field(default_factory=list)  # [stt] keyterms: names/words to bias recognition toward
-    voice_threshold: float = 0.6  # owner-voice cut-off (voiceprint.py); spike 2 (#32): EER 0 to 5% at 0.60
 
     @property
     def keyterms(self) -> list[str]:
@@ -74,15 +67,10 @@ class Config:
 
     @property
     def wake_phrases(self) -> list[str]:
-        """The name itself, wherever it is said ("Nova, what's on?", "hey nova"), plus the merged forms speech-to-text
-        writes for a quick "Hey Nova" ("Inova", "Anova"). Measured 2026-10-16: Parakeet and Deepgram both heard the
-        owner's "Hey Nova" as "hang over" or "Inova", while "Nova" alone came out right (#32)."""
-        words = self.name.lower().split()
-        merged = [" ".join([p + words[0], *words[1:]]) for p in ("i", "in", "a", "e", "ha", "he", "hey", "o")]
-        phrases = [" ".join(words), *merged]
-        if is_whisper(self.stt_engine):  # Whisper splits "Nova" as "no va"
-            phrases.append(" ".join([words[0][:-2] + " " + words[0][-2:], *words[1:]]))
-        return phrases
+        """Only the name itself, wherever it is said ("Nova, what's on?", "hey nova"). The merged spellings Parakeet
+        wrote for a quick "Hey Nova" ("Inova", "Anova") and Whisper's "no va" were dropped on 2026-11-10: Qwen writes
+        "Nova", and the owner wants only the name to wake it."""
+        return [" ".join(self.name.lower().split())]
 
 
 def load(path=None) -> Config:
@@ -118,7 +106,4 @@ def load(path=None) -> Config:
     if not isinstance(k, list) or len(k) > 50 or not all(isinstance(x, str) and 0 < len(x.strip()) <= 40 for x in k):
         raise ValueError("config.toml: [stt] keyterms must be a list of up to 50 words or short phrases (each 1 to 40 characters)")
     cfg.stt_keyterms = [x.strip() for x in k]
-    t = cfg.voice_threshold
-    if isinstance(t, bool) or not isinstance(t, (int, float)) or not 0 <= t <= 1:
-        raise ValueError("config.toml: [voice] threshold must be a number from 0 to 1")
     return cfg

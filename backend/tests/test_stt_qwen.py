@@ -97,16 +97,39 @@ class _Fake:
         raise AssertionError
 
 
-def test_make_stt_gives_qwen_the_segmented_service_with_the_voice_check(tmp_path):
+def test_make_stt_gives_qwen_the_segmented_service(tmp_path):
     (tmp_path / "Qwen3-ASR-1.7B-hf").mkdir()
     cfg = Config(stt_engine="qwen3-asr-gpu", models_dir=str(tmp_path))
-    vp, en, nc = object(), object(), object()
-    svc = services.make_stt(cfg, recognizer=_Fake(), voiceprint=vp, enrolment=en, needs_check=nc)
+    svc = services.make_stt(cfg, recognizer=_Fake())
     assert isinstance(svc, services.ParakeetSTTService)
-    assert svc._voiceprint is vp and svc._enrolment is en and svc._needs_check is nc
 
 
 def test_a_missing_qwen_model_says_to_run_the_installer(tmp_path):
     cfg = Config(stt_engine="qwen3-asr-gpu", models_dir=str(tmp_path))
     with pytest.raises(RuntimeError, match="qwen3-asr-gpu speech model is not installed"):
         services.make_stt(cfg)
+
+
+TERMS = ["Nova", "Deepak", "Priya", "Swiggy", "Koramangala", "Toit", "Pipecat", "Kokoro", "Parakeet"]
+
+
+@pytest.mark.parametrize("echo", [
+    "Nova, Deepak, Priya, Swiggy, Koramangala, Toit, Pipecat, Kokoro, Parakeet.",  # quiet audio, 2026-11-10
+    "Deepak, Nova, Priya, Swiggy, Koramangala, Toit, Pipecat, Kokoro, Parakeet.",
+    "nova deepak priya",
+])
+def test_the_key_terms_read_back_on_quiet_audio_are_dropped(echo):
+    srv = _serve(lambda p, b: (200, {"text": echo}))
+    try:
+        assert _transcribe(services.QwenASRClient(TERMS, port=srv.server_port), np.zeros(1600, np.float32)) == ""
+    finally:
+        srv.shutdown()
+
+
+@pytest.mark.parametrize("said", ["Nova.", "Deepak.", "Nova, Deepak", "Nova, call Priya.", "Nova, check my Swiggy order."])
+def test_real_speech_with_key_terms_is_kept(said):
+    srv = _serve(lambda p, b: (200, {"text": said}))
+    try:
+        assert _transcribe(services.QwenASRClient(TERMS, port=srv.server_port), np.zeros(1600, np.float32)) == said
+    finally:
+        srv.shutdown()

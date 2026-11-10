@@ -5,6 +5,7 @@ import asyncio
 import functools
 import json
 import os
+import re
 import time
 import urllib.request
 from collections.abc import AsyncGenerator
@@ -24,7 +25,7 @@ from pipecat.utils.time import time_now_iso8601
 
 import qwen_asr_wire
 import whisper_text
-from config import QWEN_ASR_PORT, checks_voice, is_whisper  # noqa: F401  (checks_voice: re-exported for callers and tests)
+from config import QWEN_ASR_PORT, is_whisper
 
 PARAKEET_NAME = "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8"
 
@@ -94,8 +95,8 @@ class ParakeetSTTService(SegmentedSTTService):
     # cache-aware model if STT latency dominates.
     wants_wav_segments = False
 
-    def __init__(self, model_dir: Path | None = None, recognizer=None, voiceprint=None, enrolment=None,
-                 needs_check=None, clean=None, model_name="parakeet-tdt-0.6b-v3", **kwargs):
+    def __init__(self, model_dir: Path | None = None, recognizer=None, clean=None, model_name="parakeet-tdt-0.6b-v3",
+                 **kwargs):
         super().__init__(
             sample_rate=16000,
             ttfs_p99_latency=1.3,  # the 0.8 s pause plus decoding
@@ -104,9 +105,6 @@ class ParakeetSTTService(SegmentedSTTService):
         )
         self._rec = recognizer or _load_recognizer(model_dir)
         self._cut = None
-        self._voiceprint = voiceprint  # #32: only the owner's wake phrase wakes the assistant
-        self._needs_check = needs_check  # text -> bool: asleep and a wake phrase (ProgrammaticWake.would_wake)
-        self._enrolment = enrolment  # #32: while enrolling, segments are takes (enrolment.py)
         self._clean = clean or (lambda text: text)  # str -> str on every decoded text (Whisper's filter)
 
     def can_generate_metrics(self) -> bool:
@@ -167,32 +165,17 @@ class ParakeetSTTService(SegmentedSTTService):
         await self._cancel_cut()
         await super().stop(frame)
 
-    # A short "Hey Nova" peaking at 0.3 came out as nothing or "Inova"; normalised, Parakeet heard it (#32).
-    PEAK = 0.9
-    MAX_GAIN = 4.0  # near silence stays near silence
-
     def _decode(self, pcm: bytes) -> str:
         audio = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
-        peak = float(np.abs(audio).max()) if len(audio) else 0.0
-        if peak > 0:
-            audio = audio * min(self.PEAK / peak, self.MAX_GAIN)
         stream = self._rec.create_stream()
         stream.accept_waveform(16000, audio)
         self._rec.decode_stream(stream)
         return self._clean(stream.result.text.strip())
 
     async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame, None]:
-        if self._enrolment is not None and self._enrolment.active:  # #32: a take, not something said to the assistant
-            text = await asyncio.to_thread(self._decode, audio)
-            await asyncio.to_thread(self._enrolment.offer, audio, text)
-            return
         await self.start_processing_metrics()
         text = await asyncio.to_thread(self._decode, audio)
         await self.stop_processing_metrics()
-        # As Siri and Google: only the wake phrase is voice-checked, then the conversation is trusted (#32).
-        if (text and self._voiceprint is not None and self._needs_check is not None and self._needs_check(text)
-                and not await asyncio.to_thread(self._voiceprint.is_owner, audio)):
-            return
         if text:  # never logged: until the wake phrase this is whatever the room is saying
             yield TranscriptionFrame(text, self._user_id, time_now_iso8601())
 
@@ -287,6 +270,13 @@ class QwenASRClient:
     def create_stream(self):
         return _QwenStream()
 
+    def _echoes_keyterms(self, text: str) -> bool:
+        """On quiet audio Qwen reads its context back ("Nova, Deepak, Priya, ..."), which would wake the assistant
+        (2026-11-10). Three or more words, every one of them a key term, is that echo, not speech."""
+        terms = {w for t in self.keyterms for w in t.lower().split()}
+        words = re.findall(r"[^\W_]+", text.lower())
+        return len(words) >= 3 and all(w in terms for w in words)
+
     def decode_stream(self, stream):
         try:
             req = urllib.request.Request(f"http://127.0.0.1:{self.port}/transcribe",
@@ -294,7 +284,7 @@ class QwenASRClient:
                                          headers={"Content-Type": "application/json"})
             with urllib.request.urlopen(req, timeout=self.timeout) as r:
                 text = json.load(r)["text"]
-            stream.result.text = text if isinstance(text, str) else ""
+            stream.result.text = text if isinstance(text, str) and not self._echoes_keyterms(text) else ""
         except Exception as e:  # down, slow, 500, bad JSON: a missed sentence, never a crashed pipeline
             stream.result.text = ""
             if time.monotonic() - self._last_warned > 30:
@@ -319,22 +309,19 @@ def stt_dir(cfg) -> Path:
     return Path(cfg.models_dir).expanduser() / STT_MODELS[cfg.stt_engine]
 
 
-def make_stt(cfg, recognizer=None, voiceprint=None, enrolment=None, needs_check=None):
-    """The configured speech-to-text service. recognizer: a fake for tests. voiceprint: segmented engines only (#32)."""
+def make_stt(cfg, recognizer=None):
+    """The configured speech-to-text service. recognizer: a fake for tests."""
     d = stt_dir(cfg)
     if recognizer is None and not d.is_dir():
         raise RuntimeError(f"The {cfg.stt_engine} speech model is not installed ({d}). Run ./install.sh.")
     if cfg.stt_engine == "parakeet":
-        return ParakeetSTTService(model_dir=d, recognizer=recognizer, voiceprint=voiceprint, enrolment=enrolment,
-                                  needs_check=needs_check)
+        return ParakeetSTTService(model_dir=d, recognizer=recognizer)
     if is_whisper(cfg.stt_engine):
         size = cfg.stt_engine.removeprefix("whisper-")
         return ParakeetSTTService(model_dir=d, recognizer=recognizer or _load_whisper_recognizer(d, size, cfg.stt_language),
-                                  voiceprint=voiceprint, enrolment=enrolment, needs_check=needs_check,
                                   clean=whisper_text.clean, model_name=cfg.stt_engine)
     if cfg.stt_engine == "qwen3-asr-gpu":  # no clean filter: Qwen doesn't invent text the way Whisper does
         return ParakeetSTTService(model_dir=d, recognizer=recognizer or QwenASRClient(cfg.keyterms),
-                                  voiceprint=voiceprint, enrolment=enrolment, needs_check=needs_check,
                                   model_name="qwen3-asr-1.7b")
     return NemotronSTTService(model_dir=d, recognizer=recognizer,
                               language=Language.EN if cfg.stt_engine == "nemotron" else None)
