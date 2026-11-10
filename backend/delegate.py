@@ -22,6 +22,32 @@ GONE = "That errand can't be continued: its session is gone. Start it again?"
 _DELETE_WORDS = re.compile(r"\b(delete|remove|erase|wipe|trash|get rid of|throw away)\b", re.I)
 
 
+# Nova never pays (autonomy.PAYMENT_HOSTS): an errand never gets what pays, so no hostile page can talk it out of it.
+NO_PAYMENT_DETAILS = "I don't take card or UPI details; I'll get you to checkout and you pay."
+_CARD = re.compile(r"(?<![\d-])\d(?:[ -]?\d){12,18}(?![\d-])")  # 13 to 19 digits, spaces or dashes allowed
+_SECRETS = re.compile(
+    r"\b(cvv2?|cvc2?|cvn|csc)\b\D{0,20}\d{3,4}\b"
+    r"|\b(upi\s*pin|m-?pin)\b\D{0,20}\d{4,6}\b"  # never a bare "pin": "pin code 560001" is an address
+    r"|\b(otp|one[- ]time\s+(password|passcode|code|pin))\b\D{0,20}\d{4,8}\b"
+    r"|\b(net\s*-?\s*banking|internet\s+banking|bank(ing)?)\s+(login\s+)?(password|passcode|pwd)\s*(is\b|:|=)\s*\S",
+    re.I)
+
+
+def _luhn(digits: str) -> bool:
+    total = 0
+    for i, c in enumerate(reversed(digits)):
+        d = int(c) * (2 if i % 2 else 1)
+        total += d - 9 if d > 9 else d
+    return total % 10 == 0
+
+
+def payment_details(text: str) -> bool:
+    """A card number (Luhn-valid), a CVV/CVC, a UPI PIN, an OTP or a netbanking password, with its value.
+    ponytail: any 13-19 digit Luhn-valid run counts, so 1 in 10 such order numbers is refused too."""
+    cards = (re.sub(r"\D", "", m.group(0)) for m in _CARD.finditer(text or ""))
+    return any(_luhn(c) for c in cards) or bool(_SECRETS.search(text or ""))
+
+
 def _asked_to_delete(params) -> bool:
     ctx = getattr(params, "context", None)
     return bool(ctx) and bool(_DELETE_WORDS.search(last_user_text(ctx.get_messages())))
@@ -89,6 +115,10 @@ def make_tools(backend, registry, settings_for, on_finish=None, workspace_root=N
             errand: The errand id from an earlier result, to continue that errand; 0 for a new errand.
             access: What the errand may do in that folder: "read" (default), "write" (read and change, never delete), or "delete" only when the user's own words ask to delete something.
         """
+        if payment_details(task):  # before anything is made or run for it
+            await params.result_callback({"status": "refused", "errand": errand, "result": NO_PAYMENT_DETAILS,
+                                          "instruction": "Tell the user exactly this, in one short sentence."})
+            return
         if state["running"]:
             prior = registry.get_task(errand) if errand else None
             if prior and prior["session_id"] == state["sid"]:  # resuming it now would run it twice
