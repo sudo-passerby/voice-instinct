@@ -19,8 +19,8 @@ if (!app.requestSingleInstanceLock() || process.argv.includes("--quit")) {
   return;
 }
 
-// The page's console (connection events, errors; never what was said) goes to a file, so a dead or
-// stalled orb can be diagnosed. Started fresh once it passes 1 MB.
+// The page's warnings and errors (never what was said) go to a file, so a dead or stalled orb can be
+// diagnosed. Only those: client-js logs at info/debug can carry the bot's replies. Started fresh once it passes 1 MB.
 const LOG = path.join(os.homedir(), ".voice-instinct", "frontend.log");
 const log = (line) => {
   try { if (fs.statSync(LOG).size > 1e6) fs.truncateSync(LOG); } catch {}
@@ -73,7 +73,7 @@ function createWindow() {
     webPreferences: { preload: path.join(__dirname, "preload.js"), contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
   win.setAlwaysOnTop(true, "floating");
-  win.webContents.on("console-message", (e) => log(`[${e.level}] ${e.message}`));
+  win.webContents.on("console-message", (e) => { if (e.level === "warning" || e.level === "error") log(`[${e.level}] ${e.message}`); });
   // A crashed or frozen page cannot reconnect itself: reload it (it reconnects on load).
   win.webContents.on("render-process-gone", (_e, d) => {
     log(`page gone: ${d.reason}`);
