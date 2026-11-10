@@ -6,6 +6,7 @@ locations are also denied through permission rules. Deny rules hold in every per
 """
 
 import json
+import os
 from pathlib import Path
 
 _SECRET_DIRS = (".ssh", ".aws", ".gnupg", ".config/gh", ".config/gcloud", ".kube", ".docker",
@@ -57,7 +58,8 @@ BLOCKED_ORIGINS = ";".join(("http://localhost:*", "http://localhost", "http://12
 def resolver_rules():
     """Chromium's --host-resolver-rules: every payment host fails to resolve, so no redirect, frame, fetch or
     service worker reaches it either (--blocked-origins misses redirects)."""
-    return ", ".join(f"MAP {h} ~NOTFOUND" for h in PAYMENT_HOSTS)
+    # Each host also with a trailing dot: "api.razorpay.com." is the same site and matched neither rule (review).
+    return ", ".join(f"MAP {v} ~NOTFOUND" for h in PAYMENT_HOSTS for v in (h, h + "."))
 # The errand browser's tools that run code outside the sandbox or read local files into a page, and
 # browser_evaluate: page JS could click "Pay" without the purchase guard (hooks.PRE_TOOL_MATCHER) seeing it.
 _BROWSER_DENY = ("mcp__browser__browser_run_code_unsafe", "mcp__browser__browser_file_upload",
@@ -205,8 +207,10 @@ def browser_mcp(home, cdp_endpoint=None):
     else:  # Playwright's own launch: the rules go in its config file, under browser/ (never writable by an errand)
         config = vi / "browser/errand-config.json"
         try:
-            config.write_text(json.dumps({"browser": {"launchOptions": {"args": [
+            tmp = config.with_name(f".{config.name}.{os.getpid()}")  # atomic: a Playwright start never reads half
+            tmp.write_text(json.dumps({"browser": {"launchOptions": {"args": [
                 f"--host-resolver-rules={resolver_rules()}"]}}}))
+            os.replace(tmp, config)
         except OSError:
             return None  # never a browser that could reach a payment gateway
         args = ["--browser", "chromium", "--headless", "--isolated", "--config", str(config)]

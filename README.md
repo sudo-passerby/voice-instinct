@@ -93,9 +93,9 @@ nor change that file.
   - It cannot reach the main payment gateways and hosted checkouts: Razorpay, PayU, Paytm's gateway,
     CCAvenue, BillDesk, Juspay, Cashfree, PhonePe, Easebuzz, Instamojo, Stripe, PayPal, Adyen, Braintree,
     Checkout.com, Worldpay, Google Pay and Amazon Pay (the list is `PAYMENT_HOSTS` in `backend/autonomy.py`).
-    Their hosts are blocked by the browser itself, so a redirect doesn't get through either.
-  - Nova never takes card or UPI details: an errand whose task holds a card number, a CVV, a UPI PIN, an OTP
-    or a netbanking password is refused before it starts.
+    Their hosts are blocked by the browser itself (with or without a trailing dot), so a redirect doesn't get through either.
+  - Nova never takes card or UPI details: an errand whose task holds a card number written as digits, a CVV, a UPI PIN, an OTP
+    or a netbanking password is refused before it starts, and Nova won't remember them either.
   - This does not cover a merchant's own in-house payment page, a gateway not on the list, or cash on
     delivery, where nothing has to be paid online. That is why the errand stops at checkout, and why the
     check below asks.

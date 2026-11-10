@@ -24,18 +24,18 @@ _DELETE_WORDS = re.compile(r"\b(delete|remove|erase|wipe|trash|get rid of|throw 
 
 # Nova never pays (autonomy.PAYMENT_HOSTS): an errand never gets what pays, so no hostile page can talk it out of it.
 NO_PAYMENT_DETAILS = "I don't take card or UPI details; I'll get you to checkout and you pay."
-_CARD = re.compile(r"(?<![\d-])\d(?:[ -]?\d){12,18}(?![\d-])")  # 13 to 19 digits, spaces or dashes allowed
+_CARD = re.compile(r"(?<![\d./_-])\d(?:[ ./_-]?\d){12,18}(?![\d./_-])")  # 13 to 19 digits; spaces, dots, dashes, slashes
 _SECRETS = re.compile(
-    r"\b(cvv2?|cvc2?|cvn|csc)\b\D{0,20}\d{3,4}\b"
+    r"\b(cvv2?|cvc2?|cvn|csc|security\s+code|card\s+verification\s+(value|code))\b\D{0,20}\d{3,4}\b"
     r"|\b(upi\s*pin|m-?pin)\b\D{0,20}\d{4,6}\b"  # never a bare "pin": "pin code 560001" is an address
-    r"|\b(otp|one[- ]time\s+(password|passcode|code|pin))\b\D{0,20}\d{4,8}\b"
+    r"|\b(otp|one[- ]time\s+(password|passcode|code|pin)|verification\s+code)\b\D{0,20}\d{4,8}\b"
     r"|\b(net\s*-?\s*banking|internet\s+banking|bank(ing)?)\s+(login\s+)?(password|passcode|pwd)\s*(is\b|:|=)\s*\S",
     re.I)
 
 
 # Not card details, Luhn or not: Amazon's order format, and a number labelled as an order, shipment or booking.
 _ORDER_FORMAT = re.compile(r"\d{3}-\d{7}-\d{7}")
-_ORDER_LABEL = re.compile(r"(\b(order(\s+(no\.?|number|id))?|tracking|awb|pnr|booking\s+id)\s*:?\s*#?|#)\s*$", re.I)
+_ORDER_LABEL = re.compile(r"(\b(order(\s+(no\.?|number|id))?|tracking(\s+(no\.?|number|id))?|awb|pnr|booking\s+id|ref(erence)?(\s+(no\.?|number|id))?|invoice(\s+(no\.?|number))?|ticket(\s+(no\.?|number|id))?|consignment(\s+(no\.?|number))?|shipment(\s+(no\.?|number|id))?)\s*:?\s*#?|#)\s*$", re.I)
 # Still card details whatever the label: "card" just before it, or an expiry date just after.
 _CARD_LABEL = re.compile(r"\bcard\b\D{0,20}$", re.I)
 _EXPIRY = re.compile(r"^\D{0,20}\b(exp\w*|valid\s+(thru|till|until))\b\D{0,5}\d{1,2}\s*/\s*\d{2,4}", re.I)

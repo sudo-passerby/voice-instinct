@@ -269,3 +269,20 @@ def test_a_busy_probe_never_makes_the_nightly_run_skip(tmp_path):
     with m.tidying():
         assert m.busy()
     assert not m.busy()
+
+
+def test_card_or_upi_details_are_never_remembered(tmp_path):
+    # errands see memory (prompt_block), so a remembered card would reach them
+    import asyncio
+    from memory import Memory, make_memory_tools
+    mem = Memory(tmp_path / "memory")
+    remember = next(t for t in make_memory_tools(mem) if t.__name__ == "remember")
+    out = []
+
+    class P:
+        async def result_callback(self, r, **kw):
+            out.append(r)
+
+    asyncio.run(remember(P(), "Card is 4111 1111 1111 1111"))
+    assert out[-1]["status"] == "refused" and "4111" not in (tmp_path / "memory/notes.md").read_text() \
+        if (tmp_path / "memory/notes.md").exists() else out[-1]["status"] == "refused"

@@ -309,3 +309,10 @@ def test_a_gateway_is_blocked_even_behind_a_redirect(tmp_path):
     rules = resolver_rules()
     assert "MAP *.razorpay.com ~NOTFOUND" in rules and "MAP razorpay.com ~NOTFOUND" in rules
     assert "MAP pay.google.com ~NOTFOUND" in rules and "MAP *.google.com" not in rules
+
+
+def test_a_payment_host_is_blocked_with_a_trailing_dot_too():
+    # "api.razorpay.com." is the same site; live review 2026-11-10 loaded Razorpay Checkout through it
+    from autonomy import resolver_rules
+    rules = resolver_rules()
+    assert "MAP *.razorpay.com ~NOTFOUND" in rules and "MAP *.razorpay.com. ~NOTFOUND" in rules

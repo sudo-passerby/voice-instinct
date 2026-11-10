@@ -287,6 +287,9 @@ def make_memory_tools(memory, on_forget=None):
         Args:
             fact: The fact in one short sentence, in the third person, e.g. "Is vegetarian".
         """
+        from delegate import payment_details  # errands see memory: card or UPI details never go in (never pays)
+        if payment_details(fact):
+            return await params.result_callback({"status": "refused", "reason": "I don't keep card or UPI details."})
         await asyncio.to_thread(memory.remember, fact)  # git runs off the audio loop
         await params.result_callback({"status": "remembered" if memory.ok else "memory is unavailable"})
 

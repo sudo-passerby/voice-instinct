@@ -497,3 +497,15 @@ def test_ordinary_numbers_and_questions_about_payments_still_run(task):
     p, out = make_params()
     run(delegate(p, task))
     assert len(b.calls) == 1 and out[-1]["status"] == "done", task
+
+
+import pytest as _pytest
+
+
+@_pytest.mark.parametrize("text,refused", [
+    ("card 4111.1111.1111.1111", True), ("pay with 4111/1111/1111/1111", True), ("security code 123", True),
+    ("verification code 482193", True), ("tracking id 4111111111111111", False), ("invoice no 4111111111111111", False),
+    ("ticket number 4111111111111111", False), ("ref no 4111111111111111", False), ("call +91 98450 12345", False)])
+def test_card_details_in_any_separator_are_refused_and_labelled_references_are_not(text, refused):
+    from delegate import payment_details
+    assert payment_details(text) is refused
