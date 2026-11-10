@@ -235,3 +235,15 @@ def test_a_reply_longer_than_the_window_still_hears_the_follow_up():
     users, _, sent, _ = asyncio.run(converse(
         ["which bank should i use"], timeout=0.5, hold=lambda: talking["on"], pause=0.9, before=long_reply))
     assert users == ["which bank should i use"]  # a "sleep" may follow, once the new window runs out
+
+
+import pytest
+
+
+@pytest.mark.parametrize("name,heard", [("J.A.R.V.I.S.", "Jarvis, what's on?"), ("J.A.R.V.I.S.", "J.A.R.V.I.S. hello"),
+                                        ("Mary-Jane", "Mary-Jane, hi"), ("Mary-Jane", "mary jane what time is it"),
+                                        ("Nova!", "Nova, the weather")])
+def test_a_name_with_punctuation_still_wakes_it(name, heard):
+    from config import Config
+    _, _, sent, _ = asyncio.run(converse([heard], phrases=Config(name=name).wake_phrases))
+    assert sent and sent[0] == {"type": "wake", "reason": "phrase"}
