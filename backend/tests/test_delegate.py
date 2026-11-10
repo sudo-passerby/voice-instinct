@@ -209,6 +209,16 @@ def test_delegate_is_declared_async_with_a_timeout_past_the_backend_budget():
     assert delegate._pipecat_timeout_secs == 130  # backend timeout + margin, so the framework never cuts a live run
 
 
+def test_the_deadline_also_covers_the_folder_question():
+    # The folder question is asked inside the call, before the run: it must not eat the run's own time.
+    class B:
+        timeout = 100
+
+    bridge = SimpleNamespace(timeout=90)  # HookBridge's permission_timeout
+    (delegate,) = make_tools(B(), Registry(), lambda sid: None, bridge=bridge)
+    assert delegate._pipecat_timeout_secs == 100 + 90 + 30
+
+
 def test_timeout_defaults_when_the_backend_has_none():
     (delegate,) = make_tools(FakeBackend([]), Registry(), lambda sid: None)
     assert delegate._pipecat_timeout_secs == 330

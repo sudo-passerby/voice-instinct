@@ -73,8 +73,9 @@ def make_tools(backend, registry, settings_for, on_finish=None, workspace_root=N
         return (folder, access), None
 
     # Async call (Pipecat: Function Calling > Per-Tool Options): barge-in must not cancel it, and the
-    # framework deadline must outlive the backend's own timeout.
-    @tool_options(cancel_on_interruption=False, timeout_secs=getattr(backend, "timeout", 300) + 30)
+    # framework deadline must outlive the folder question (asked first, in the call) plus the backend's own timeout.
+    @tool_options(cancel_on_interruption=False,
+                  timeout_secs=getattr(backend, "timeout", 300) + (bridge.timeout if bridge else 0) + 30)
     async def delegate(params: FunctionCallParams, task: str, directory: str = "", errand: int = 0,
                        access: str = "read"):
         """Hand an errand (research, comparing options, bookings, shopping, bills, subscriptions) to the backend agent and return its answer. Not for coding or general computer tasks. Every result gives its errand id. To follow up on an earlier errand (refine it, check again, answer a question it asked), call this again with that errand id; for a new topic leave errand at 0. An errand works in its own private workspace; a folder of the user's needs their yes first, which this tool asks for itself.
