@@ -9,23 +9,26 @@ REPO = Path(__file__).resolve().parent.parent.parent
 SCRIPT = REPO / "install.sh"
 
 
-def run(tmp_path, os_id, *args):
+def clean_repo(tmp_path):
+    """Temp copy of just what install.sh needs: no config.toml, no .env. Never the live checkout's own config."""
+    repo = tmp_path / "repo"
+    (repo / "backend").mkdir(parents=True, exist_ok=True)
+    (repo / "frontend").mkdir(exist_ok=True)
+    shutil.copy(SCRIPT, repo / "install.sh")
+    shutil.copy(REPO / "config.example.toml", repo / "config.example.toml")
+    return repo
+
+
+def run(tmp_path, os_id, *args, extra_env=None):
+    """install.sh from a clean copy, with no AMD GPU and plenty of disk, whatever this machine has."""
+    repo = clean_repo(tmp_path)
     rel = tmp_path / "os-release"
     rel.write_text(f'ID={os_id}\nNAME="{os_id}"\n')
     home = tmp_path / "home"
     home.mkdir(exist_ok=True)
-    env = {**os.environ, "VI_OS_RELEASE": str(rel), "VI_HOME": str(home), "VI_PKG_CHECK": "not-installed-tool"}
-    return subprocess.run(["bash", str(SCRIPT), *args], capture_output=True, text=True, env=env), home
-
-
-def clean_repo(tmp_path):
-    """Temp copy of just what install.sh needs: no config.toml, no .env."""
-    repo = tmp_path / "repo"
-    (repo / "backend").mkdir(parents=True)
-    (repo / "frontend").mkdir()
-    shutil.copy(SCRIPT, repo / "install.sh")
-    shutil.copy(REPO / "config.example.toml", repo / "config.example.toml")
-    return repo
+    env = {**os.environ, "VI_OS_RELEASE": str(rel), "VI_HOME": str(home), "VI_PKG_CHECK": "not-installed-tool",
+           "VI_KFD_TOPOLOGY": str(tmp_path / "no-kfd"), "VI_FREE_GB": "50", **(extra_env or {})}
+    return subprocess.run(["bash", str(repo / "install.sh"), *args], capture_output=True, text=True, env=env), home
 
 
 def run_clean(tmp_path, *args, extra_env=None):
@@ -145,13 +148,14 @@ def test_unsupported_distro_stops_before_any_change(tmp_path):
 
 
 def test_existing_user_config_and_env_are_never_overwritten(tmp_path):
-    cfg = REPO / "config.toml"
-    existed = cfg.exists()
+    repo = clean_repo(tmp_path)
+    cfg, env_file = b'[assistant]\nname = "Sentinel"\n# mine\n', b"GEMINI_API_KEY=sentinel-key\nOTHER=1\n"
+    (repo / "config.toml").write_bytes(cfg)
+    (repo / ".env").write_bytes(env_file)
     r, _ = run(tmp_path, "arch", "--dry-run")
-    if existed:
-        assert "keep existing config.toml" in r.stdout
-    else:
-        assert "create config.toml from config.example.toml" in r.stdout
+    assert r.returncode == 0, r.stderr
+    assert "keep existing config.toml" in r.stdout and "add GEMINI_API_KEY" not in r.stdout
+    assert (repo / "config.toml").read_bytes() == cfg and (repo / ".env").read_bytes() == env_file
 
 
 def test_uninstall_keeps_data_unless_purge(tmp_path):
@@ -167,16 +171,10 @@ def test_sway_rule_uses_gui_size_and_output_width(tmp_path):
     sm = fake / "swaymsg"
     sm.write_text('#!/bin/sh\necho \'[{"focused":false,"rect":{"width":800}},{"focused":true,"rect":{"width":2560}}]\'\n')
     sm.chmod(0o755)
-    rel = tmp_path / "os-release"
-    rel.write_text('ID=arch\nNAME="arch"\n')
-    home = tmp_path / "home"
-    home.mkdir()
-    env = {**os.environ, "VI_OS_RELEASE": str(rel), "VI_HOME": str(home), "VI_PKG_CHECK": "not-installed-tool", "SWAYSOCK": "/x", "PATH": f"{fake}:{os.environ['PATH']}"}
-    out = subprocess.run(["bash", str(SCRIPT), "--dry-run"], capture_output=True, text=True, env=env).stdout
-    size = int(next(l.split("=")[1].split("#")[0] for l in (REPO / "config.example.toml").read_text().splitlines() if l.startswith("size")))
-    if (REPO / "config.toml").exists():
-        size = int(next((l.split("=")[1].split("#")[0] for l in (REPO / "config.toml").read_text().splitlines() if l.startswith("size")), size))
-    assert f"resize set {size} {size}, move position {2560 - size - 24} 12" in out
+    repo = clean_repo(tmp_path)
+    (repo / "config.toml").write_text("[gui]\nsize = 200\n")  # its own config, never the live one
+    out = run(tmp_path, "arch", "--dry-run", extra_env={"SWAYSOCK": "/x", "PATH": f"{fake}:{os.environ['PATH']}"})[0].stdout
+    assert "resize set 200 200, move position 2336 12" in out
     assert "bindsym $mod+n exec " in out and "/.local/bin/voice-instinct toggle" in out
     assert "/.local/bin/voice-instinct\n" in out  # Sway has no XDG autostart: exec the launcher
 
@@ -201,7 +199,7 @@ def test_no_answer_at_the_sudo_prompt_means_no(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
     env = {**os.environ, "VI_OS_RELEASE": str(rel), "VI_HOME": str(home), "VI_PKG_CHECK": "not-installed-tool", "PATH": f"{fake}:{os.environ['PATH']}"}
-    r = subprocess.run(["bash", str(SCRIPT)], capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL)
+    r = subprocess.run(["bash", str(clean_repo(tmp_path) / "install.sh")], capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL)
     assert r.returncode != 0 and not (tmp_path / "sudo-ran").exists()
     assert "sudo pacman -S --needed" in r.stderr  # tells the user what to run instead
 
@@ -245,7 +243,7 @@ def test_rerun_with_every_package_present_does_not_ask_for_sudo(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
     env = {**os.environ, "VI_OS_RELEASE": str(rel), "VI_HOME": str(home), "PATH": f"{fake}:/usr/bin:/bin"}
-    r = subprocess.run(["bash", str(SCRIPT)], capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL)
+    r = subprocess.run(["bash", str(clean_repo(tmp_path) / "install.sh")], capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL)
     assert "Not installing system packages" not in r.stderr and not (tmp_path / "sudo-ran").exists()
     assert "already installed" in r.stdout
 
