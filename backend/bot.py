@@ -61,6 +61,7 @@ cfg = load()
 DATA = Path(cfg.data_dir).expanduser()
 registry = Registry(DATA / "harness.db")
 registry.expire_open()  # questions left open by a previous run can no longer be answered
+registry.close_unfinished()  # and no errand survived it: none shows as running
 sessions = set()  # open sessions' runners, cancelled when the server is stopped
 relay = Relay(registry)
 MEMORY = Memory(DATA / "memory")  # profile, notes and memory files (#25, #26); off if unusable

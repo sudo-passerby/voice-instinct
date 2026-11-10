@@ -148,6 +148,14 @@ class Registry:
             "UPDATE questions SET status='expired', answered_at=? WHERE status='open'",
             (self.clock(),)).rowcount
 
+    def close_unfinished(self):
+        """At startup: no run survives a restart, so a session still open has ended and a running task was
+        aborted. The session can still be resumed."""
+        now = self.clock()
+        self.db.execute("UPDATE sessions SET state='ended', ended_at=?, end_reason='restart' WHERE state!='ended'",
+                        (now,))
+        self.db.execute("UPDATE tasks SET status='aborted', finished_at=? WHERE status='running'", (now,))
+
     def list_sessions(self, active_only=False):
         where = "WHERE s.state != 'ended'" if active_only else ""
         rows = self.db.execute(f"""

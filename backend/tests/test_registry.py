@@ -143,3 +143,19 @@ def test_a_reminder_in_flight_is_done_once_delivered_or_put_back_on_restart():
     reg.mark_delivered(a)
     assert reg.requeue_in_flight() == 1  # b was never delivered: a restart puts it back
     assert [r["id"] for r in reg.due_reminders(5.0)] == [b]
+
+
+def test_after_a_restart_open_sessions_end_and_running_tasks_are_aborted():
+    # No run survives a restart: list_sessions must not show it running, nor its task as still going.
+    r, _ = make()
+    for sid, state in (("run", "running"), ("idle", "idle"), ("wait", "waiting_input"), ("old", "ended")):
+        r.upsert_session(sid, state=state)
+    r.set_state("old", "ended", end_reason="stopped_by_user")
+    t_running, t_done = r.create_task("run", "x"), r.create_task("idle", "y")
+    r.finish_task(t_done, "done", "ok")
+    r.close_unfinished()
+    for sid in ("run", "idle", "wait"):
+        s = r.get_session(sid)
+        assert (s["state"], s["end_reason"]) == ("ended", "restart") and s["ended_at"] is not None
+    assert r.get_session("old")["end_reason"] == "stopped_by_user"  # an earlier ending is kept
+    assert r.get_task(t_running)["status"] == "aborted" and r.get_task(t_done)["status"] == "done"
