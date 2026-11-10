@@ -26,13 +26,13 @@ def said(text):
             VADUserStoppedSpeakingFrame(), SleepFrame(sleep=0.6)]
 
 
-async def converse(texts, timeout=10, before=None, hold=None, pause=0.1, early=None):
+async def converse(texts, timeout=10, before=None, hold=None, pause=0.1, early=None, phrases=("hey nova", "okay nova")):
     ctx, sent = LLMContext(), []
 
     async def send(msg):
         sent.append(msg)
 
-    wake = make_wake(["hey nova", "okay nova"], timeout, send, **({"hold": hold} if hold else {}))
+    wake = make_wake(list(phrases), timeout, send, **({"hold": hold} if hold else {}))
     if early:
         early(wake)  # before the pipeline has set the strategy up
     user, _ = LLMContextAggregatorPair(ctx, user_params=LLMUserAggregatorParams(
@@ -214,58 +214,9 @@ def test_assistant_turn_done_keeps_awake_when_not_dismissing():
     asyncio.run(go())
 
 
-def test_learned_phrases_wake_it_once_added():
-    users, _, sent, _ = asyncio.run(converse(["Hey Mailo, hello"], early=lambda w: w.add_phrases(["hey mailo"])))
-    assert users == ["Hey Mailo, hello"] and sent[0] == {"type": "wake", "reason": "phrase"}
-
-
-def test_would_wake_only_while_asleep_and_only_with_the_phrase():
-    async def go():
-        async def send(m):
-            pass
-        w = make_wake(["hey nova"], 30, send)
-        await w.setup(SimpleNamespace(task_manager=TaskManager(loop=asyncio.get_running_loop())))
-        asleep = (w.would_wake("Hey, Nova! What's on?"), w.would_wake("what's on today"))
-        w.wake("shown")
-        awake = w.would_wake("Hey Nova")
-        await w.cleanup()
-        return asleep, awake
-    assert asyncio.run(go()) == ((True, False), False)
-
-
-def test_would_wake_sees_a_wake_phrase_split_across_segments():
-    # A guest says "Okay." ... "Milo, read my email": Pipecat's gate joins the two, so the check must too.
-    async def go():
-        async def send(m):
-            pass
-        w = make_wake(["okay nova"], 30, send)
-        await w.setup(SimpleNamespace(task_manager=TaskManager(loop=asyncio.get_running_loop())))
-        w._check_wake_phrase("Okay.")  # what the gate does with the first segment while asleep
-        split = w.would_wake("Nova, read my email")
-        await w.cleanup()
-        return split
-    assert asyncio.run(go()) is True
-
-
-def test_removed_phrases_no_longer_wake_it():
-    async def go():
-        async def send(m):
-            pass
-        w = make_wake(["hey nova"], 30, send)
-        await w.setup(SimpleNamespace(task_manager=TaskManager(loop=asyncio.get_running_loop())))
-        w.add_phrases(["nova", "inova"])
-        added = w.would_wake("bossa nova")
-        w.remove_phrases(["nova", "inova"])
-        removed = (w.would_wake("bossa nova"), w.would_wake("Hey Nova"))
-        await w.cleanup()
-        return added, removed
-    assert asyncio.run(go()) == (True, (False, True))  # the configured phrase still works
-
-
 def test_the_name_anywhere_wakes_it():
     from config import Config
-    users, _, sent, _ = asyncio.run(converse(["could you, Nova, check the weather"],
-                                             early=lambda w: w.add_phrases(Config().wake_phrases)))
+    users, _, sent, _ = asyncio.run(converse(["could you, Nova, check the weather"], phrases=Config().wake_phrases))
     assert sent and sent[0] == {"type": "wake", "reason": "phrase"}
 
 

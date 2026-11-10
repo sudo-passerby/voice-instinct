@@ -97,13 +97,11 @@ class _Fake:
         raise AssertionError
 
 
-def test_make_stt_gives_qwen_the_segmented_service_with_the_voice_check(tmp_path):
+def test_make_stt_gives_qwen_the_segmented_service(tmp_path):
     (tmp_path / "Qwen3-ASR-1.7B-hf").mkdir()
     cfg = Config(stt_engine="qwen3-asr-gpu", models_dir=str(tmp_path))
-    vp, en, nc = object(), object(), object()
-    svc = services.make_stt(cfg, recognizer=_Fake(), voiceprint=vp, enrolment=en, needs_check=nc)
+    svc = services.make_stt(cfg, recognizer=_Fake())
     assert isinstance(svc, services.ParakeetSTTService)
-    assert svc._voiceprint is vp and svc._enrolment is en and svc._needs_check is nc
 
 
 def test_a_missing_qwen_model_says_to_run_the_installer(tmp_path):

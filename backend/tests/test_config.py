@@ -173,24 +173,6 @@ def test_whisper_also_wakes_on_the_name_split_in_two():
     assert "no va" not in Config(stt_engine="parakeet").wake_phrases
 
 
-def test_only_segmented_engines_check_the_voice():
-    from config import checks_voice
-    assert checks_voice("parakeet") and checks_voice("whisper-small") and checks_voice("qwen3-asr-gpu")
-    assert not checks_voice("nemotron") and not checks_voice("nemotron-multilingual")
-
-
-def test_voice_threshold_defaults_and_is_validated(tmp_path):
-    p = tmp_path / "config.toml"
-    p.write_text("")
-    assert load(p).voice_threshold == 0.6
-    p.write_text("[voice]\nthreshold = 0.5\n")
-    assert load(p).voice_threshold == 0.5
-    for bad in ("1.5", "-0.1", "true", '"high"'):
-        p.write_text(f"[voice]\nthreshold = {bad}\n")
-        with pytest.raises(ValueError, match="threshold"):
-            load(p)
-
-
 def test_keyterms_always_start_with_the_assistant_name_and_dedupe(tmp_path):
     p = tmp_path / "c.toml"
     p.write_text('[assistant]\nname = "Nova"\n[stt]\nengine = "qwen3-asr-gpu"\nkeyterms = ["Priya", "nova", "Swiggy", "priya"]\n')

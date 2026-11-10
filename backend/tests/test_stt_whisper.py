@@ -7,7 +7,7 @@ import pytest
 from config import Config
 from pipecat.frames.frames import InputAudioRawFrame, TranscriptionFrame, VADUserStartedSpeakingFrame, VADUserStoppedSpeakingFrame
 from pipecat.tests.utils import SleepFrame, run_test
-from services import ParakeetSTTService, checks_voice, make_stt
+from services import ParakeetSTTService, make_stt
 from whisper_text import clean
 
 
@@ -71,11 +71,6 @@ def test_make_stt_gives_whisper_the_segmented_service_with_the_filter():
     assert heard(stt) == []
     stt = make_stt(Config(stt_engine="parakeet"), recognizer=Fake("[MUSIC PLAYING]"))
     assert heard(stt) == ["[MUSIC PLAYING]"]
-
-
-def test_only_segmented_engines_check_the_voice():
-    assert checks_voice("parakeet") and checks_voice("whisper-small")
-    assert not checks_voice("nemotron")
 
 
 def test_a_missing_whisper_model_says_to_run_the_installer(tmp_path):

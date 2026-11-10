@@ -59,12 +59,7 @@ Built on [Pipecat](https://docs.pipecat.ai).
 - Speech recognition and synthesis run locally, and sessions and questions are logged only on your
   machine in `~/.voice-instinct/`, readable only by you. The models you choose see the conversation
   and the task (Gemini and Claude are cloud services); use Ollama for a local front model.
-- Only your voice wakes it, once you enrol: with the orb open, run `cd backend && uv run enroll.py` and
-  read five lines to the orb (one minute). It works at once. As with Siri, the voice check is on the wake
-  phrase: other people saying "Nova" are ignored, and once you've woken it, it listens to the conversation
-  until it sleeps. The voiceprint stays in `~/.voice-instinct/`, and `uv run enroll.py --delete` removes it.
-  If it misses you, lower `[voice] threshold` in `config.toml` (default 0.6); if others get through, raise
-  it. It needs the Parakeet, a Whisper or the qwen3-asr-gpu engine. Say "stop" to send it away; running errands carry on.
+- Say "bye" or "stop" to send it away; running errands carry on.
 - Errands can read your memory but never change it, and never see the raw journal of your conversations.
   The nightly memory run has no network and no web tools, and learns only what you said, never what a
   web page said. Journals are deleted after 7 days; `./install.sh --uninstall --purge` deletes all memory.

@@ -19,11 +19,6 @@ def is_whisper(engine: str) -> bool:
     return engine.startswith("whisper-")
 
 
-def checks_voice(engine: str) -> bool:
-    """Engines that hand over a finished segment the owner's voice can be checked on (nemotron streams)."""
-    return engine in ("parakeet", "qwen3-asr-gpu") or is_whisper(engine)
-
-
 # config.toml section -> {key in file: Config field}
 _SECTIONS = {
     "assistant": {"name": "name", "awake_timeout": "awake_timeout"},
@@ -35,7 +30,6 @@ _SECTIONS = {
               "permission_timeout": "permission_timeout"},
     "debug": {"browser_steps": "debug_browser_steps"},
     "stt": {"engine": "stt_engine", "language": "stt_language", "keyterms": "stt_keyterms"},
-    "voice": {"threshold": "voice_threshold"},
 }
 
 
@@ -60,7 +54,6 @@ class Config:
     stt_engine: str = "nemotron"  # speech-to-text engine (services.make_stt); install.sh downloads only this one
     stt_language: str = "en"  # Whisper's language code ([stt] language)
     stt_keyterms: list[str] = field(default_factory=list)  # [stt] keyterms: names/words to bias recognition toward
-    voice_threshold: float = 0.6  # owner-voice cut-off (voiceprint.py); spike 2 (#32): EER 0 to 5% at 0.60
 
     @property
     def keyterms(self) -> list[str]:
@@ -118,7 +111,4 @@ def load(path=None) -> Config:
     if not isinstance(k, list) or len(k) > 50 or not all(isinstance(x, str) and 0 < len(x.strip()) <= 40 for x in k):
         raise ValueError("config.toml: [stt] keyterms must be a list of up to 50 words or short phrases (each 1 to 40 characters)")
     cfg.stt_keyterms = [x.strip() for x in k]
-    t = cfg.voice_threshold
-    if isinstance(t, bool) or not isinstance(t, (int, float)) or not 0 <= t <= 1:
-        raise ValueError("config.toml: [voice] threshold must be a number from 0 to 1")
     return cfg

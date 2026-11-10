@@ -1,13 +1,11 @@
 """Wake phrase gate: Pipecat's documented WakePhraseUserTurnStartStrategy, plus programmatic wake.
 
 `wake()` and `keep_awake()` are ours: the strategy has no public way to wake from code, so they call
-its private `_transition_to_awake` / `_refresh_timeout`, `add_phrases` extends its `_phrases` / `_patterns`,
-and `hold` overrides `_transition_to_idle`
+its private `_transition_to_awake` / `_refresh_timeout`, and `hold` overrides `_transition_to_idle`
 (all pinned by tests against Pipecat 1.12).
 """
 
 import asyncio
-import re
 
 from loguru import logger
 
@@ -56,29 +54,6 @@ class ProgrammaticWake(WakePhraseUserTurnStartStrategy):
         """Restart the awake window, e.g. when the bot finishes speaking, so the user can reply."""
         if self.awake:
             self._refresh_timeout()
-
-    def would_wake(self, text: str) -> bool:
-        """Asleep, and this text completes a wake phrase: the segment the owner check judges (#32). Joined to
-        the gate's accumulated text, as Pipecat matches it, so "Okay." ... "Nova, ..." is checked too."""
-        if self.awake:
-            return False
-        text = self._accumulated_text + " " + self._strip_punctuation(text)
-        return any(p.search(text) for p in self._patterns)
-
-    def add_phrases(self, phrases) -> None:
-        """More wake phrases (learned at enrolment), compiled like the strategy's own in __init__."""
-        for phrase in phrases:
-            if phrase not in self._phrases:
-                self._phrases.append(phrase)
-                self._patterns.append(re.compile(
-                    r"\b" + r"\s*".join(re.escape(w) for w in phrase.split()) + r"\b", re.IGNORECASE))
-
-    def remove_phrases(self, phrases) -> None:
-        """Drop phrases added with add_phrases (the voiceprint was deleted: back to the configured ones)."""
-        for phrase in phrases:
-            if phrase in self._phrases:
-                i = self._phrases.index(phrase)
-                del self._patterns[i], self._phrases[i]
 
     def dismiss(self, grace: float = 5.0) -> None:
         """The user said stop: sleep when the goodbye line ends, or after `grace` if none comes."""

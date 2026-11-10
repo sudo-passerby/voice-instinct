@@ -15,7 +15,7 @@ from autonomy import browser_mcp, sandbox_settings, with_debug_record
 from budget import TimeBudget
 from claude_cli import ClaudeCodeBackend
 from clock import current_time
-from config import REPO_ROOT, checks_voice, load
+from config import REPO_ROOT, load
 from delegate import make_tools
 from gui import make_gui_router
 from guard import refuse_other_origins
@@ -45,9 +45,7 @@ from services import build_llm, kokoro_paths, make_stt
 from shutdown import cancel_on_exit
 from steps import StepHub
 from telegram import Telegram
-from enrolment import Enrolment, make_enrol_router
 from memory import PROMPT as MEMORY_PROMPT, Memory, make_memory_tools
-from voiceprint import Voiceprint, cohort_mean, learned_wake_phrases
 from wake import handle_client_message, make_dismiss, make_wake
 
 load_dotenv(REPO_ROOT / ".env")
@@ -60,10 +58,6 @@ def _quiet_logs():
     logger.add(sys.stderr, level=os.environ.get("VI_LOG_LEVEL", "INFO"))  # VI_LOG_LEVEL=DEBUG to debug
 
 cfg = load()
-VOICEPRINT = Voiceprint.load(cfg)  # #32: no file means everyone is heard, as before enrolment
-if VOICEPRINT.enrolled and not checks_voice(cfg.stt_engine):  # Nemotron streams, with no segment to check
-    logger.warning('voice check off: it needs [stt] engine = "parakeet" or a whisper engine')
-    VOICEPRINT = Voiceprint(None, None, cfg.voice_threshold)
 DATA = Path(cfg.data_dir).expanduser()
 registry = Registry(DATA / "harness.db")
 registry.expire_open()  # questions left open by a previous run can no longer be answered
@@ -73,11 +67,6 @@ MEMORY = Memory(DATA / "memory")  # profile, notes and memory files (#25, #26); 
 MEMORY.ensure()
 bridge = HookBridge(registry, relay, cfg.permission_timeout)
 HOOK_TOKEN = load_token(DATA / "hook-token")
-WAKES = set()  # open sessions' wake strategies, told about spellings learned at enrolment (#32)
-ENROLMENT = Enrolment(cfg, VOICEPRINT, embed=VOICEPRINT.embed,
-                      cohort=lambda: cohort_mean(VOICEPRINT.embed, kokoro_paths(cfg)),
-                      on_learned=lambda phrases: [w.add_phrases(phrases) for w in list(WAKES)],
-                      on_deleted=lambda learned: [w.remove_phrases(learned) for w in list(WAKES)])
 # Debug mode (config [debug] browser_steps): every errand browser step screenshotted (steps.py).
 TELEGRAM = Telegram.from_env()  # None until TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are set
 STEPS = StepHub(Path.home(), telegram=TELEGRAM) if cfg.debug_browser_steps else None
@@ -98,7 +87,6 @@ app.router.lifespan_context = _with_reminders
 BUDGET = TimeBudget(min_notice=cfg.permission_timeout + 30)  # errands are told when nearly out of time
 app.include_router(make_router(bridge, HOOK_TOKEN, steps=STEPS, budget=BUDGET))
 app.include_router(make_gui_router(cfg))
-app.include_router(make_enrol_router(ENROLMENT, HOOK_TOKEN))  # enroll.py: owner enrolment through the assistant (#32)
 refuse_other_origins(app, port=7860)  # no other web page may open a voice session (guard.py)
 logging.getLogger("uvicorn.access").addFilter(hide_hook_tokens)  # the token is in the URL
 logging.getLogger("phonemizer").setLevel(logging.ERROR)  # Kokoro's espeak warns on every number; noise
@@ -170,11 +158,9 @@ async def bot(runner_args: RunnerArguments):
         if "worker" in holder:
             await holder["worker"].rtvi.send_server_message(msg)
 
-    wake = make_wake(cfg.wake_phrases + learned_wake_phrases(cfg), cfg.awake_timeout, send_gui,
+    wake = make_wake(cfg.wake_phrases, cfg.awake_timeout, send_gui,
                      hold=lambda: relay.holds_awake)  # the window restarts when Nova finishes speaking
-    WAKES.add(wake)
-    # As Siri does: only a wake phrase said while asleep is voice-checked (#32)
-    stt = make_stt(cfg, voiceprint=VOICEPRINT, enrolment=ENROLMENT, needs_check=wake.would_wake)
+    stt = make_stt(cfg)
 
     tools = [make_dismiss(wake), current_time, *make_reminder_tools(registry, TELEGRAM),
              # forget also scrubs the conversation restored at every connect (context is set below, before any call)
@@ -284,7 +270,6 @@ async def bot(runner_args: RunnerArguments):
         await runner.run()
     finally:
         sessions.discard(runner)
-        WAKES.discard(wake)
 
 
 if __name__ == "__main__":
