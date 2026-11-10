@@ -118,8 +118,8 @@ def make_tools(backend, registry, settings_for, on_finish=None, workspace_root=N
                     raise ValueError("Access must be read, write or delete.")
                 held = registry.get_grant(sid)
                 folder = resolve_folder(directory, home) if directory and directory.strip() else None
-                if folder is None and held:  # a resumed errand keeps its grant
-                    folder, access = Path(held["folder"]), held["access"]
+                if folder is None and held:  # a resumed errand keeps its grant (asking only to go higher)
+                    folder, access = Path(held["folder"]), max(access, held["access"], key=LEVELS.get)
                 if folder is None and not wd.is_relative_to(workspace_root.resolve()):
                     folder = wd  # an errand from before grants ran in the user's folder: it needs one now
                 if folder is not None and folder.is_relative_to(workspace_root.resolve()):

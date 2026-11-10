@@ -146,6 +146,8 @@ def test_once_lasts_for_that_errand_and_its_resumes_only(w):
     _, asked = w.go(w.delegate, "add the hotel", errand=errand)  # resumed: its grant, no new question
     assert asked == [] and w.grants[-1] == w.grants[0] and w.backend.calls[-1]["resume"] is True
     assert w.fresh_folders().load() == []  # never saved
+    _, asked = w.go(w.delegate, "fix a typo in them", errand=errand, access="write", reply="no")  # higher: asks
+    assert len(asked) == 1 and w.grants[-1] == w.grants[0]
     _, asked = w.go(w.delegate, "another errand", "~/Documents/trip", reply="no")  # a new errand asks again
     assert len(asked) == 1
 
