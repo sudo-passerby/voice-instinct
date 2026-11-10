@@ -41,10 +41,28 @@ mic -> Nemotron STT -> Smart Turn v3 -> front LLM -> Kokoro TTS -> speaker
 
 Built on [Pipecat](https://docs.pipecat.ai).
 
+## Folders
+
+An errand works in its own private folder under `~/.voice-instinct/workspace`. To use one of your
+folders ("the notes in ~/Documents/trip"), Nova asks first and says exactly what it would do: read
+only, or read and change but never delete. Answer "yes" for just this errand (and its follow-ups), or
+"always" to let every later errand use that folder at that level without asking; a grant covers the
+folder's subfolders, and the most specific one wins. You can also say "you can always read my
+Documents folder" up front, and it still asks you to confirm.
+
+Deleting is asked for only when you say to delete something, is only ever for that one errand, and
+each delete is asked again before it runs. Hidden folders (`~/.config`, `~/.local`, ...), this app's
+own code and data, your whole home folder and anything outside it can never be granted.
+
+Ask "what folders can you access?" to hear the standing grants, and "stop accessing Documents" to
+remove one (no confirmation needed). They live in `~/.voice-instinct/folders.json`, read on every
+errand, so you can also edit it by hand; an entry for a folder that can never be granted is ignored.
+Errands can neither read nor change that file.
+
 ## How it keeps you in control
 
-- Shell commands run inside Claude Code's sandbox, can only write inside the task's own folder, and
-  fail closed if the sandbox is unavailable.
+- Shell commands run inside Claude Code's sandbox, can only write inside the task's own folder (and a
+  folder you let it change), and fail closed if the sandbox is unavailable.
 - Your secrets (`~/.ssh`, cloud credentials, this app's keys and database) are off limits to the agent,
   and the front model's API key is removed from the agent's environment.
 - The agent browses in its own headless browser that starts empty for every errand and is never

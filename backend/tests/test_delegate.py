@@ -168,28 +168,28 @@ def test_no_directory_uses_a_private_default_workspace_and_records_it(tmp_path):
     assert reg.get_session(b.calls[0]["sid"])["cwd"] == cwd
 
 
-def test_named_directory_is_used_and_follow_ups_stay_in_it(tmp_path):
-    reg, b, delegate = with_dirs(tmp_path, [BackendResult("a"), BackendResult("b")])
+def test_a_named_folder_is_never_used_without_a_way_to_ask_the_user(tmp_path):
+    # Folder grants and their questions: test_folders.py. Without the bridge nothing can be asked.
+    reg, b, delegate = with_dirs(tmp_path, [BackendResult("never")])
     p, out = make_params()
     run(delegate(p, "make it", "~/code/snake"))
-    run(delegate(make_params()[0], "add scores", errand=out[-1]["errand"]))  # the follow-up names the errand
-    assert {c["cwd"] for c in b.calls} == {str((tmp_path / "code" / "snake").resolve())}
-    assert [c["resume"] for c in b.calls] == [False, True] and len({c["sid"] for c in b.calls}) == 1
+    assert out[-1]["status"] == "refused" and b.calls == []
 
 
-def test_a_different_directory_starts_a_new_session(tmp_path):
+def test_a_follow_up_stays_in_the_errands_own_folder(tmp_path):
     reg, b, delegate = with_dirs(tmp_path, [BackendResult("a"), BackendResult("b")])
-    run(delegate(make_params()[0], "one", "~/a"))
-    run(delegate(make_params()[0], "two", "~/b"))
-    assert b.calls[1]["resume"] is False and b.calls[1]["sid"] != b.calls[0]["sid"]
-    assert len(reg.list_sessions()) == 2
+    p, out = make_params()
+    run(delegate(p, "make it"))
+    run(delegate(make_params()[0], "add scores", errand=out[-1]["errand"]))  # the follow-up names the errand
+    assert len({c["cwd"] for c in b.calls}) == 1 and b.calls[0]["cwd"].startswith(str((tmp_path / "ws").resolve()))
+    assert [c["resume"] for c in b.calls] == [False, True] and len({c["sid"] for c in b.calls}) == 1
 
 
 def test_directory_outside_home_is_refused_without_starting_anything(tmp_path):
     reg, b, delegate = with_dirs(tmp_path, [BackendResult("never")])
     p, out = make_params()
     run(delegate(p, "wipe it", "/etc"))
-    assert out[-1]["status"] == "error" and "home" in out[-1]["result"]
+    assert out[-1]["status"] == "refused" and "home" in out[-1]["result"]
     assert b.calls == [] and reg.list_sessions() == []
     p2, out2 = make_params()
     run(asyncio.wait_for(delegate(p2, "ok now", "~/fine"), 2))  # the slot was released
