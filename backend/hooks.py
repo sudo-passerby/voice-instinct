@@ -212,8 +212,11 @@ class HookBridge:
         self.reg.upsert_session(sid, cwd=p.get("cwd"))
         self.reg.add_event(sid, "PreToolUse", p)
         real = [_real_name(n) for n in nodes]
+        # The real target's name, the page's own when the snapshot knows it, for relay: only a target that cancels
+        # or stops lets "yes, cancel it" approve (confirm.names_a_cancellation). Never sent back to Claude.
+        name = (nodes[0][1] or nodes[0][2]) if nodes else str(inp.get("element") or "")
         return pre_tool_response(await self.ask(sid, "permission", describe(p.get("tool_name"), inp, page, real),
-                                                p.get("tool_name"), inp))
+                                                p.get("tool_name"), {**inp, "_target_name": name}))
 
     async def ask(self, sid, kind, prompt, tool_name=None, tool_input=None):
         """Put a question to the user through the relay and wait for its answer (what answer_question resolved

@@ -138,10 +138,48 @@ def test_the_answer_is_judged_against_the_question_and_without_the_assistants_na
     assert _answered("browser_click: Pay now (ref e3)", "yes, cancel it") == "denied"
     # The purchase guard's questions (browser tools) are never cancel or stop questions, whatever their text.
     assert _answered("browser_click: Pay & stop ads (ref e3)", "yes, stop") == "denied"
+    # Without the target name the guard stores, the prompt text alone never makes it a cancel question.
     assert _answered("browser_click: Cancel subscription (ref e3)", "yes, cancel it") == "denied"
     assert _answered("browser_click: Cancel subscription (ref e3)", "yes") == "allowed"
     assert _answered("browser_click: Pay now (ref e3)", "Nova, yes", name_words(["nova"])) == "allowed"
     assert _answered("browser_click: Pay now (ref e3)", "Nova no", name_words(["nova"])) == "denied"
+
+
+def _guarded(element, said, snapshot=None, target="e3"):
+    """The purchase guard's real path: a click asks (hooks.py), the user answers (answer_question)."""
+    async def go():
+        reg, relay, task, ctx, bridge = setup("hi")
+        if snapshot:
+            bridge.note_page({"session_id": "s1", "tool_name": "mcp__browser__browser_snapshot",
+                              "tool_response": snapshot})
+        t = asyncio.create_task(bridge.on_pre_tool_use({
+            "session_id": "s1", "cwd": "/w", "tool_name": "mcp__browser__browser_click",
+            "tool_input": {"element": element, "target": target}}))
+        for _ in range(5):
+            await asyncio.sleep(0)
+        (q,) = reg.open_questions()
+        ctx.msgs.append({"role": "assistant", "content": "Allow it?"})
+        ctx.msgs.append({"role": "user", "content": said})
+        p, out = params(ctx)
+        await make_bridge_tools(bridge, relay, reg, FakeBackend())[0](p, q["id"])
+        return (await asyncio.wait_for(t, 1))["hookSpecificOutput"]["permissionDecision"]
+
+    return run(go())
+
+
+def test_cancel_or_stop_approve_a_guarded_click_only_when_its_real_target_cancels_or_stops():
+    assert _guarded("Cancel subscription", "yes, cancel it") == "allow"
+    assert _guarded("Unsubscribe from the paid subscription", "yes, stop it") == "allow"
+    assert _guarded("End subscription", "yeah, cancel") == "allow"
+    assert _guarded("Pay & stop ads", "yes, stop") == "deny"
+    assert _guarded("Subscription settings: cancel", "yes, cancel it") == "deny"  # must start with it
+    assert _guarded("Cancellation subscription", "yes, cancel") == "deny"  # whole words
+    for word in ("cancel", "stop"):  # a bare one is still no
+        assert _guarded("Cancel subscription", word) == "deny"
+    # The page's own name wins over the agent's words, either way round.
+    snap = '- button "Pay ₹499 and stop ads" [ref=e3]\n- button "Cancel subscription" [ref=e4]'
+    assert _guarded("Cancel subscription", "yes, cancel it", snap, target="e3") == "deny"
+    assert _guarded("Continue", "yes, cancel it", snap, target="e4") == "allow"
 
 
 def test_yes_spoken_before_the_question_cannot_approve():

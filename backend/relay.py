@@ -1,15 +1,19 @@
 """Relay: speaks pending Claude questions through the live LLM and records the user's answer."""
 
 import asyncio
+import json
 import re
 import time
 
 from loguru import logger
 
-from confirm import classify, grant_answer, last_user_text, standing_answer
+from confirm import classify, grant_answer, last_user_text, names_a_cancellation, standing_answer
 from pipecat.adapters.schemas.direct_function import tool_options
 from pipecat.frames.frames import LLMMessagesAppendFrame
 from pipecat.services.llm_service import FunctionCallParams
+
+
+TARGET_NAME = "_target_name"  # hooks.py stores a guarded step's real target name in its question's input
 
 
 def _quote_safe(text):
@@ -297,10 +301,17 @@ def make_bridge_tools(bridge, relay, registry, backend, names=()):
             return
         # A folder question (folders.py) also tells "just this once" from "always", from the user's words alone.
         # allow_folder's own question already asks for always: there a plain yes is always (folders.py).
-        # A browser step's question comes from the purchase guard: never a cancel/stop question, whatever its text
-        # says ("Pay & stop ads"), so "cancel" and "stop" there always mean no.
-        asked = "" if str(q.get("tool_name") or "").startswith("mcp__browser__") else q["prompt"]
-        verdict = (classify(reply, asked, names) if q["kind"] != "folder" else
+        # A browser step's question comes from the purchase guard: it is a cancel/stop question only when the
+        # target's real name, stored by the guard (hooks.py), starts with cancel, stop, unsubscribe or end; never
+        # from the prompt text ("Pay & stop ads").
+        about_cancel = None
+        if str(q.get("tool_name") or "").startswith("mcp__browser__"):
+            try:
+                stored = json.loads(q.get("tool_input_json") or "{}")
+            except ValueError:
+                stored = {}
+            about_cancel = names_a_cancellation(stored.get(TARGET_NAME) if isinstance(stored, dict) else None)
+        verdict = (classify(reply, q["prompt"], names, about_cancel) if q["kind"] != "folder" else
                    standing_answer(reply, names) if q["tool_name"] == "allow_folder" else grant_answer(reply, names))
         if verdict == "unclear":
             relay.reask(question_id)  # a fresh marker, so only an answer to the new ask can count
