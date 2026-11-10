@@ -143,3 +143,17 @@ def test_a_reminder_in_flight_is_done_once_delivered_or_put_back_on_restart():
     reg.mark_delivered(a)
     assert reg.requeue_in_flight() == 1  # b was never delivered: a restart puts it back
     assert [r["id"] for r in reg.due_reminders(5.0)] == [b]
+
+
+def test_a_database_from_before_the_reminder_anchor_gains_it(tmp_path):
+    import sqlite3
+    db = tmp_path / "harness.db"
+    old = sqlite3.connect(db)
+    old.execute("CREATE TABLE reminders(id INTEGER PRIMARY KEY, text TEXT NOT NULL, due REAL NOT NULL, "
+                "repeat TEXT NOT NULL DEFAULT 'none', status TEXT NOT NULL DEFAULT 'pending', created REAL NOT NULL, fired REAL)")
+    old.execute("INSERT INTO reminders(text, due, created) VALUES('water', 100, 1)")
+    old.commit()
+    old.close()
+    reg = Registry(db)
+    assert reg.get_reminder(1)["anchor"] is None  # reminders.next_due then counts from its due time
+    assert reg.get_reminder(reg.add_reminder("tea", 200, "daily"))["anchor"] == 200

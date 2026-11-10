@@ -235,7 +235,7 @@ async def bot(runner_args: RunnerArguments):
 
     @assistant_aggregator.event_handler("on_assistant_turn_stopped")
     async def on_assistant_turn_stopped(aggregator, message):
-        relay.bot_turn(False)
+        relay.bot_turn(False, spoken=bool(message.content) and not message.interrupted)  # a note counts once said
         MEMORY.journal("assistant", message.content)
         wake.assistant_turn_done()  # the user can reply without the phrase, unless they said stop
         save_conversation(registry, context)

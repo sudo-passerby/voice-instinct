@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS conversation_bad(
   id INTEGER PRIMARY KEY, messages_json TEXT NOT NULL, at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS reminders(
   id INTEGER PRIMARY KEY, text TEXT NOT NULL, due REAL NOT NULL, repeat TEXT NOT NULL DEFAULT 'none',
-  status TEXT NOT NULL DEFAULT 'pending', created REAL NOT NULL, fired REAL);
+  status TEXT NOT NULL DEFAULT 'pending', created REAL NOT NULL, fired REAL, anchor REAL);
 CREATE INDEX IF NOT EXISTS reminders_due ON reminders(status, due);
 CREATE INDEX IF NOT EXISTS events_by_session ON events(session_id, at);
 CREATE INDEX IF NOT EXISTS questions_by_status ON questions(status);
@@ -55,6 +55,8 @@ class Registry:
         if path != ":memory:":
             self.db.execute("PRAGMA journal_mode=WAL")
         self.db.executescript(SCHEMA)
+        if "anchor" not in {r["name"] for r in self.db.execute("PRAGMA table_info(reminders)")}:
+            self.db.execute("ALTER TABLE reminders ADD COLUMN anchor REAL")  # a database from before it
         if path != ":memory:":
             os.chmod(path, 0o600)
 
@@ -157,20 +159,29 @@ class Registry:
             FROM sessions s {where} ORDER BY s.started_at DESC""")
         return [dict(r) for r in rows]
 
-    def add_reminder(self, text, due, repeat="none"):
-        return self.db.execute("INSERT INTO reminders(text, due, repeat, created) VALUES(?, ?, ?, ?)",
-                               (text, due, repeat, self.clock())).lastrowid
+    def add_reminder(self, text, due, repeat="none", anchor=None):
+        """anchor: the time the user set, whose wall-clock time a repeat keeps (reminders.next_due); default due."""
+        return self.db.execute("INSERT INTO reminders(text, due, repeat, created, anchor) VALUES(?, ?, ?, ?, ?)",
+                               (text, due, repeat, self.clock(), due if anchor is None else anchor)).lastrowid
+
+    def get_reminder(self, rid):
+        return self._one("SELECT * FROM reminders WHERE id=?", (rid,))
 
     def pending_reminders(self):
         return [dict(r) for r in self.db.execute(
             "SELECT * FROM reminders WHERE status='pending' ORDER BY due")]
+
+    def open_reminders(self):
+        """Pending, or due and waiting to be spoken (fired): what the user still has coming."""
+        return [dict(r) for r in self.db.execute(
+            "SELECT * FROM reminders WHERE status IN ('pending', 'fired') ORDER BY due")]
 
     def due_reminders(self, now):
         return [dict(r) for r in self.db.execute(
             "SELECT * FROM reminders WHERE status='pending' AND due<=? ORDER BY due", (now,))]
 
     def cancel_reminder(self, rid):
-        return self.db.execute("UPDATE reminders SET status='cancelled' WHERE id=? AND status='pending'",
+        return self.db.execute("UPDATE reminders SET status='cancelled' WHERE id=? AND status IN ('pending', 'fired')",
                                (rid,)).rowcount == 1
 
     def mark_fired(self, rid, now):
@@ -179,7 +190,13 @@ class Registry:
                                (now, rid)).rowcount == 1
 
     def mark_delivered(self, rid):
-        self.db.execute("UPDATE reminders SET status='done' WHERE id=? AND status='fired'", (rid,))
+        """False: it was cancelled meanwhile."""
+        return self.db.execute("UPDATE reminders SET status='done' WHERE id=? AND status='fired'", (rid,)).rowcount == 1
+
+    def reschedule(self, rid, due):
+        """A delivered repeat, moved on in one UPDATE of its own row. False: it was cancelled meanwhile."""
+        return self.db.execute("UPDATE reminders SET status='pending', due=?, fired=NULL WHERE id=? AND status='fired'",
+                               (due, rid)).rowcount == 1
 
     def requeue_in_flight(self):
         """Claimed but never delivered (the bot stopped before Nova said it): pending again, so none is lost."""

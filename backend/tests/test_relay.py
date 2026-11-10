@@ -600,6 +600,9 @@ def test_a_note_reports_when_it_is_spoken_and_when_it_is_dropped():
         events = []
         relay.say("one", on_spoken=lambda: events.append("spoken1"), on_dropped=lambda: events.append("dropped1"))
         await asyncio.sleep(0.01)
+        relay.bot_turn(True)  # the turn that says it
+        assert events == []  # handed to the model is not yet said
+        relay.bot_turn(False, spoken=True)
         relay.bot_turn(True)  # mid-reply: the next note must wait
         relay.say("two", on_spoken=lambda: events.append("spoken2"), on_dropped=lambda: events.append("dropped2"))
         await asyncio.sleep(0.01)
@@ -618,3 +621,37 @@ def test_it_holds_nova_awake_while_it_speaks_or_waits_for_an_answer():
     speaking = relay.holds_awake
     relay.bot_turn(False)  # on_assistant_turn_stopped
     assert (idle, speaking, relay.holds_awake) == (False, True, False)
+
+
+def test_one_note_at_a_time_each_settled_by_its_own_turn():
+    async def go():
+        relay = Relay(Registry())
+        task = FakeTask()
+        await relay.attach_and_pump(task, FakeContext())
+        events = []
+        for n in ("1", "2"):
+            relay.say(n, on_spoken=lambda n=n: events.append("spoken" + n), on_dropped=lambda n=n: events.append("dropped" + n))
+        await asyncio.sleep(0.01)
+        first = len(task.frames)
+        relay.bot_turn(True)
+        relay.bot_turn(False, spoken=False)  # interrupted
+        await asyncio.sleep(0.01)
+        relay.bot_turn(True)
+        relay.bot_turn(False, spoken=True)
+        return first, len(task.frames), events
+
+    assert run(go()) == (1, 2, ["dropped1", "spoken2"])
+
+
+def test_a_note_in_flight_is_dropped_when_a_new_session_attaches():
+    async def go():
+        relay = Relay(Registry())
+        await relay.attach_and_pump(FakeTask(), FakeContext())
+        events = []
+        relay.say("x", on_spoken=lambda: events.append("spoken"), on_dropped=lambda: events.append("dropped"))
+        await asyncio.sleep(0.01)
+        relay.attach(FakeTask(), FakeContext())
+        return events
+
+    assert run(go()) == ["dropped"]
+
