@@ -34,6 +34,8 @@ CREATE TABLE IF NOT EXISTS conversation_bad(
 CREATE TABLE IF NOT EXISTS reminders(
   id INTEGER PRIMARY KEY, text TEXT NOT NULL, due REAL NOT NULL, repeat TEXT NOT NULL DEFAULT 'none',
   status TEXT NOT NULL DEFAULT 'pending', created REAL NOT NULL, fired REAL);
+CREATE TABLE IF NOT EXISTS grants(
+  session_id TEXT PRIMARY KEY REFERENCES sessions(id), folder TEXT NOT NULL, access TEXT NOT NULL, at REAL NOT NULL);
 CREATE INDEX IF NOT EXISTS reminders_due ON reminders(status, due);
 CREATE INDEX IF NOT EXISTS events_by_session ON events(session_id, at);
 CREATE INDEX IF NOT EXISTS questions_by_status ON questions(status);
@@ -148,8 +150,26 @@ class Registry:
             "UPDATE questions SET status='expired', answered_at=? WHERE status='open'",
             (self.clock(),)).rowcount
 
+    def close_unfinished(self):
+        """At startup: no run survives a restart, so a session still open has ended and a running task was
+        aborted. The session can still be resumed."""
+        now = self.clock()
+        self.db.execute("UPDATE sessions SET state='ended', ended_at=?, end_reason='restart' WHERE state!='ended'",
+                        (now,))
+        self.db.execute("UPDATE tasks SET status='aborted', finished_at=? WHERE status='running'", (now,))
+
+    def set_grant(self, session_id, folder, access):
+        """A "once" folder grant (folders.py): this errand and its resumes only. One folder per errand."""
+        self.db.execute("INSERT INTO grants(session_id, folder, access, at) VALUES(?,?,?,?) ON CONFLICT(session_id) "
+                        "DO UPDATE SET folder=excluded.folder, access=excluded.access, at=excluded.at",
+                        (session_id, str(folder), access, self.clock()))
+
+    def get_grant(self, session_id):
+        return self._one("SELECT folder, access FROM grants WHERE session_id=?", (session_id,))
+
     def list_sessions(self, active_only=False):
-        where = "WHERE s.state != 'ended'" if active_only else ""
+        # origin 'nova': the holder of questions Nova asks for itself (allow_folder), not a Claude session
+        where = "WHERE s.origin != 'nova'" + (" AND s.state != 'ended'" if active_only else "")
         rows = self.db.execute(f"""
             SELECT s.*,
               (SELECT COUNT(*) FROM questions q WHERE q.session_id=s.id AND q.status='open') AS open_questions,

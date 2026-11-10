@@ -58,7 +58,21 @@ def _agent_env(hide=()) -> dict:
                                   or k.startswith(("ANTHROPIC_", "CLAUDE_")))}
 
 
-def _kill_group(proc) -> None:
+async def _end_group(proc, grace: float = 3.0) -> None:
+    """SIGTERM the CLI's whole process group, so the browser's MCP server can close Chromium, then SIGKILL
+    whatever is still there after `grace` seconds. A straight SIGKILL left Chromium behind."""
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + grace
+    while loop.time() < deadline:
+        await asyncio.sleep(0.05)
+        try:
+            os.killpg(proc.pid, 0)  # anyone left in the group?
+        except ProcessLookupError:
+            return
     try:
         os.killpg(proc.pid, signal.SIGKILL)
     except ProcessLookupError:
@@ -86,7 +100,7 @@ class ClaudeCodeBackend:
         if proc is None or proc.returncode is not None:
             return False
         self._stopped.add(session_id)
-        _kill_group(proc)
+        await _end_group(proc)
         return True
 
     async def run(
@@ -128,10 +142,9 @@ class ClaudeCodeBackend:
             out, err = await asyncio.wait_for(proc.communicate(), self.timeout)
         except asyncio.TimeoutError:
             return BackendResult(text="The task timed out.", is_error=True)
-        finally:  # timeout or cancellation (barge-in): never leave the CLI running unattended
-            if proc.returncode is None:
-                _kill_group(proc)
-                await proc.wait()
+        finally:  # timeout or cancellation (barge-in): never leave the CLI, or anything it started, running
+            await _end_group(proc)  # also after a normal exit: a child left in its group goes too
+            await proc.wait()
             if session_id:
                 self._procs.pop(session_id, None)
         if session_id in self._stopped:

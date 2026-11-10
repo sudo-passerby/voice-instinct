@@ -41,10 +41,28 @@ mic -> Nemotron STT -> Smart Turn v3 -> front LLM -> Kokoro TTS -> speaker
 
 Built on [Pipecat](https://docs.pipecat.ai).
 
+## Folders
+
+An errand works in its own private folder under `~/.voice-instinct/workspace`. To use one of your
+folders ("the notes in ~/Documents/trip"), Nova asks first and says exactly what it would do: read
+only, or read and change but never delete. Answer "yes" for just this errand (and its follow-ups), or
+"always" to let every later errand use that folder at that level without asking; a grant covers the
+folder's subfolders, and the most specific one wins. You can also say "you can always read my
+Documents folder" up front, and it still asks you to confirm.
+
+Deleting is asked for only when you say to delete something, is only ever for that one errand, and
+each delete is asked again before it runs. Hidden folders (`~/.config`, `~/.local`, ...), this app's
+own code and data, your whole home folder and anything outside it can never be granted.
+
+Ask "what folders can you access?" to hear the standing grants, and "stop accessing Documents" to
+remove one (no confirmation needed). They live in `~/.voice-instinct/folders.json`, read on every
+errand, so you can also edit it by hand; an entry for a folder that can never be granted is ignored.
+Errands can neither read nor change that file.
+
 ## How it keeps you in control
 
-- Shell commands run inside Claude Code's sandbox, can only write inside the task's own folder, and
-  fail closed if the sandbox is unavailable.
+- Shell commands run inside Claude Code's sandbox, can only write inside the task's own folder (and a
+  folder you let it change), and fail closed if the sandbox is unavailable.
 - Your secrets (`~/.ssh`, cloud credentials, this app's keys and database) are off limits to the agent,
   and the front model's API key is removed from the agent's environment.
 - The agent browses in its own headless browser that starts empty for every errand and is never
@@ -52,7 +70,9 @@ Built on [Pipecat](https://docs.pipecat.ai).
 - When Claude Code asks for permission, your yes or no is decided by code from your own words, never
   by the model, and only after it actually asked you. Clicks and form entries in the errand browser
   are not asked one by one: Claude Code's auto-mode safety checks approve or refuse them, and the
-  browser's tools that could run code or upload your files are turned off.
+  browser's tools that could run code or upload your files are turned off. A click, form fill or key
+  press whose button, fields or page say pay, buy, order, checkout, subscribe or book is always
+  asked first.
 - It is instructed never to buy, pay, book or cancel without your explicit go-ahead.
 - The microphone stays open so it can hear the wake phrase. What it hears is transcribed on your
   machine and thrown away until you say the phrase; it is not stored or sent anywhere.
@@ -61,7 +81,8 @@ Built on [Pipecat](https://docs.pipecat.ai).
   and the task (Gemini and Claude are cloud services); use Ollama for a local front model.
 - Say "bye" or "stop" to send it away; running errands carry on.
 - Errands can read your memory but never change it, and never see the raw journal of your conversations.
-  The nightly memory run has no network and no web tools, and learns only what you said, never what a
+  The nightly memory run has no network and no web tools. It learns from what you and Nova said, Nova's
+  spoken summaries of errand results included, never the raw text of what a
   web page said. Journals are deleted after 7 days; `./install.sh --uninstall --purge` deletes all memory.
 
 Using a subscription CLI this way depends on the vendor's terms; check them before relying on it.

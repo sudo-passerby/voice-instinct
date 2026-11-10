@@ -56,7 +56,7 @@ def test_an_errand_continued_after_a_restart_resumes_the_same_claude_session(tmp
     import tempfile
 
     db, out = tmp_path / "harness.db", []
-    # Errands only run in folders inside the user's home (workspace.resolve_workdir), so not in /tmp.
+    # Its workspace root must be inside the user's home (folders.refusal), so not in /tmp.
     ws = Path(tempfile.mkdtemp(prefix="vi-test-continuity-", dir=Path.home() / ".voice-instinct"))
 
     async def cb(r, properties=None, **kw):

@@ -11,7 +11,14 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Request
 from loguru import logger
 
+from debugbrowser import page_url
+
 _EVENTS = ("PermissionRequest", "Stop", "SessionEnd", "SessionStart")
+# A browser step that may spend money or commit the user always goes to the user first (PreToolUse), whatever
+# auto mode's classifier would say: matched on the element's text, the form's field names and the page's URL.
+PRE_TOOL_MATCHER = "^mcp__browser__browser_(click|fill_form|press_key)$"
+MONEY_WORDS = re.compile(r"\b(pay|payment|buy|purchase|order|checkout|check out|subscribe|subscription"
+                         r"|confirm booking|book now|reserve)\b", re.I)
 # Debug mode's step hook (steps.py): every tool the agent uses. steps.SCREENSHOT_TOOLS picks the ones
 # that change the page and get a screenshot.
 STEP_MATCHER = "*"
@@ -27,8 +34,26 @@ def hook_response(decision):
     return {"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": d}}
 
 
-def describe(tool_name, tool_input):
+def pre_tool_response(decision):
+    if decision == "allow":
+        return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow"}}
+    return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                                   "permissionDecisionReason": "The user did not approve this step by voice."}}
+
+
+def _browser_target(inp):
+    """What a browser step acts on, as its tool input names it. Never typed text or form values."""
+    fields = [str(f.get("name")) for f in inp.get("fields") or [] if isinstance(f, dict) and f.get("name")]
+    return " ".join(str(x) for x in (inp.get("element"), *fields, inp.get("key")) if x)
+
+
+def describe(tool_name, tool_input, page=None):
     inp = tool_input if isinstance(tool_input, dict) else {"input": tool_input}
+    if str(tool_name).startswith("mcp__browser__") and (inp.get("element") or inp.get("fields") or inp.get("key")):
+        # The element text is the agent's own description: give the page ref it really targets as well.
+        ref = f" (ref {inp['ref']})" if inp.get("ref") else ""
+        detail = f"{_browser_target(inp)}{ref}" + (f" on {page}" if page else "")
+        return f"{str(tool_name).removeprefix('mcp__browser__')}: {detail}"
     detail = (inp.get("command") or inp.get("file_path") or inp.get("path") or inp.get("url")
               or inp.get("query") or json.dumps(inp, default=str)[:200])
     return f"{tool_name}: {detail}"
@@ -38,6 +63,7 @@ class HookBridge:
     def __init__(self, registry, relay, permission_timeout=90):
         self.reg, self.relay, self.timeout = registry, relay, permission_timeout
         self._waiters: dict[int, asyncio.Future] = {}
+        self._pages: dict[str, str] = {}  # session -> the page its browser last reported (PostToolUse)
 
     def resolve(self, qid, decision):
         fut = self._waiters.get(qid)
@@ -48,6 +74,7 @@ class HookBridge:
 
     def expire_session(self, session_id):
         """Release hooks still waiting on this session (its run ended or was stopped)."""
+        self._pages.pop(session_id, None)
         for qid, fut in list(self._waiters.items()):
             q = self.reg.get_question(qid)
             if q and q["session_id"] == session_id and not fut.done():
@@ -58,8 +85,32 @@ class HookBridge:
         logger.info(f"hook PermissionRequest ({sid[:8]})")
         self.reg.upsert_session(sid, cwd=p.get("cwd"))
         self.reg.add_event(sid, "PermissionRequest", p)
-        qid = self.reg.add_question(sid, "permission", describe(p.get("tool_name"), p.get("tool_input")),
-                                    p.get("tool_name"), p.get("tool_input"))
+        return hook_response(await self.ask(sid, "permission", describe(p.get("tool_name"), p.get("tool_input")),
+                                            p.get("tool_name"), p.get("tool_input")))
+
+    def note_page(self, p):
+        """PostToolUse: remember the page the errand browser is on, for on_pre_tool_use."""
+        url = page_url(p.get("tool_response")) if str(p.get("tool_name", "")).startswith("mcp__browser__") else None
+        if url and p.get("session_id"):
+            self._pages[p["session_id"]] = url
+
+    async def on_pre_tool_use(self, p):
+        """A click, form fill or key press that may pay, buy, order or book asks the user first. Otherwise no
+        decision: Claude Code goes on as usual."""
+        sid, inp = p.get("session_id"), p.get("tool_input") if isinstance(p.get("tool_input"), dict) else {}
+        page = self._pages.get(sid)
+        if not sid or not MONEY_WORDS.search(f"{_browser_target(inp)} {page or ''}"):
+            return {}
+        logger.info(f"hook PreToolUse: a purchase-like step ({sid[:8]})")
+        self.reg.upsert_session(sid, cwd=p.get("cwd"))
+        self.reg.add_event(sid, "PreToolUse", p)
+        return pre_tool_response(await self.ask(sid, "permission", describe(p.get("tool_name"), inp, page),
+                                                p.get("tool_name"), inp))
+
+    async def ask(self, sid, kind, prompt, tool_name=None, tool_input=None):
+        """Put a question to the user through the relay and wait for its answer (what answer_question resolved
+        it with), or None if it timed out or was released. The same question delivered twice is asked once."""
+        qid = self.reg.add_question(sid, kind, prompt, tool_name, tool_input)
         fut = self._waiters.get(qid)
         first = fut is None
         decision = None
@@ -82,7 +133,7 @@ class HookBridge:
                 self.relay.question_closed(qid, expired=timed_out)
                 if not fut.done():
                     fut.set_result(decision)
-        return hook_response(decision)
+        return decision
 
     async def on_event(self, event, p):
         sid = p.get("session_id")
@@ -111,7 +162,10 @@ def make_router(bridge, token, steps=None, budget=None):
         except Exception:
             return {}
         try:
+            if event == "PreToolUse":
+                return await bridge.on_pre_tool_use(payload)
             if event == "PostToolUse":  # debug mode's step record (steps.py), then the time budget (budget.py)
+                bridge.note_page(payload)
                 if steps:
                     await steps.on_step(payload)
                 return budget.on_step(payload) if budget else {}
@@ -125,14 +179,16 @@ def make_router(bridge, token, steps=None, budget=None):
     return router
 
 
+_TOKEN = re.compile(r"/hook/[^/?\s]+")  # with or without an event after it
+
+
 def hide_hook_tokens(record):
     """Logging filter for uvicorn's access log: keep hook calls (a refused one must be visible) but
     blank out the secret token in their URL."""
     if isinstance(record.args, tuple):
-        record.args = tuple(re.sub(r"/hook/[^/]+/", "/hook/…/", a) if isinstance(a, str) else a
-                            for a in record.args)
+        record.args = tuple(_TOKEN.sub("/hook/…", a) if isinstance(a, str) else a for a in record.args)
     elif "/hook/" in str(record.msg):
-        record.msg = re.sub(r"/hook/[^/]+/", "/hook/…/", str(record.msg))
+        record.msg = _TOKEN.sub("/hook/…", str(record.msg))
     return True
 
 
@@ -158,6 +214,8 @@ def write_run_settings(directory, session_id, token, port, hook_timeout=100, ext
     # 15 s: a debug screenshot is capped at 10 (steps.SHOT_TIMEOUT).
     hooks["PostToolUse"] = [{"matcher": STEP_MATCHER,
                              "hooks": [{"type": "http", "timeout": 15, "url": f"{url}/PostToolUse"}]}]
+    hooks["PreToolUse"] = [{"matcher": PRE_TOOL_MATCHER,  # waits for the user, like PermissionRequest
+                            "hooks": [{"type": "http", "timeout": hook_timeout, "url": f"{url}/PreToolUse"}]}]
     path = d / f"{session_id}.json"
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)  # the URL holds the token
     with os.fdopen(fd, "w") as f:
