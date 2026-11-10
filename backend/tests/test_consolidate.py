@@ -164,3 +164,30 @@ def test_the_late_notes_are_read_and_written_under_the_notes_lock(tmp_path):
     t.join(10)
     assert waited and done == [True]
     assert (m.root / "notes.md").read_text() == "- 2026-10-16: Likes chai\n"  # kept for the next run
+
+
+ERROR = 'echo \'{"type":"result","is_error":true,"result":"Prompt is too long"}\'\n'
+
+
+def test_a_failed_run_with_no_edit_log_but_changes_is_rolled_back_in_full(tmp_path):
+    # The hook never fired (no log), yet files changed: a half-edit must never be kept, so undo everything.
+    m = mem(tmp_path)
+    m.remember("Is vegetarian")
+    profile = (m.root / "profile.md").read_text()
+    unlogged = "echo broken > profile.md; mkdir -p people && echo half > people/half.md\n"
+    late = "echo '- 2026-10-16: Likes chai' >> notes.md\n"
+    assert asyncio.run(consolidate(m, fake_claude(tmp_path, late + unlogged + ERROR), TODAY)) is False
+    assert not (tmp_path / "runs/consolidate.edited").exists()
+    assert (m.root / "profile.md").read_text() == profile and not (m.root / "people/half.md").exists()
+    assert (m.root / "notes.md").read_text() == "- 2026-10-16: Is vegetarian\n- 2026-10-16: Likes chai\n"
+    assert (m.root / "journal/2026-10-16.md").exists()
+
+
+def test_a_failed_run_that_changed_nothing_changes_nothing(tmp_path):
+    m = mem(tmp_path)
+    m.remember("Is vegetarian")
+    head = subprocess.run(["git", "-C", str(m.root), "rev-parse", "HEAD"], capture_output=True, text=True).stdout
+    files = {p: p.read_bytes() for p in m.root.rglob("*") if p.is_file() and ".git" not in p.parts}
+    assert asyncio.run(consolidate(m, fake_claude(tmp_path, ERROR), TODAY)) is False
+    assert subprocess.run(["git", "-C", str(m.root), "rev-parse", "HEAD"], capture_output=True, text=True).stdout == head
+    assert {p: p.read_bytes() for p in m.root.rglob("*") if p.is_file() and ".git" not in p.parts} == files

@@ -98,12 +98,19 @@ def _lines(path):
 
 def _undo_run(memory, before, edited):
     """Put back, as they were at `before`, only the files the run wrote (its hook's log), so a file the user
-    edited during the run is left alone. Never the journal, nor .git; notes.md is the caller's."""
+    edited during the run is left alone. Never the journal, nor .git; notes.md is the caller's.
+    No log, yet the tree changed: the hook may never have fired, so undo everything since `before`, as this did
+    before the log existed (a hand edit made during the run goes too, but no half-edit is ever kept)."""
     root = memory.root.resolve()
     try:
         paths = {(memory.root / l.strip()).resolve() for l in edited.read_text().splitlines() if l.strip()}
     except OSError:
-        paths = set()  # no log: the run wrote nothing
+        paths = set()
+    if not paths:
+        if memory._git("status", "--porcelain", "--", ".", ":(exclude)notes.md").stdout.strip():
+            memory._git("reset", "-q", "--hard", before)
+            memory._git("clean", "-fdq", "-e", "journal")
+        return
     for p in sorted(paths):
         if not p.is_relative_to(root) or p == root:
             continue
