@@ -21,6 +21,13 @@ Not affiliated with Instinct.
   one file per person, place or preference, and keeps `profile.md`, a short summary of you that every
   conversation and errand starts with. It starts out knowing your country from your timezone. You can read
   and edit all of it. Installed before this? Re-run `./install.sh` to turn on the nightly run.
+  "Forget" deletes the matching facts, but a person's file keeps its name and heading (`people/priya.md`,
+  `# Priya`), and the memory's git history keeps everything it ever held; delete the file and its history
+  yourself if the name must go too.
+- It reminds you. "Remind me to call mum at 5" (or every day, or every week) is said aloud at that time
+  if you are at the laptop. If the screen is locked or the orb is not running, it goes to your Telegram
+  instead, when `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are in `.env` (see
+  [GETTING_STARTED.md](GETTING_STARTED.md)); without Telegram it waits and is said when you are back.
 - It is for errands, not coding or general computer tasks. Today that means research done on the web:
   finding and comparing flights, products, plans and prices, and answering questions about them.
 - It is a Linux desktop app. The tray menu needs a desktop with a system tray (on GNOME, the
@@ -62,7 +69,8 @@ Built on [Pipecat](https://docs.pipecat.ai).
 - Say "bye" or "stop" to send it away; running errands carry on.
 - Errands can read your memory but never change it, and never see the raw journal of your conversations.
   The nightly memory run has no network and no web tools, and learns only what you said, never what a
-  web page said. Journals are deleted after 7 days; `./install.sh --uninstall --purge` deletes all memory.
+  web page said. A day's journal is deleted once the nightly run has filed it and it is over 7 days old (one
+  a failed run could not file is kept until a run does); `./install.sh --uninstall --purge` deletes all memory.
 
 Using a subscription CLI this way depends on the vendor's terms; check them before relying on it.
 

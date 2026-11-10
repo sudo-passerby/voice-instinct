@@ -1,7 +1,9 @@
 """Long-term memory (#25, #26), after Instinct's as reverse-engineered by Dhravya Shah: a git repo of markdown
 in ~/.voice-instinct/memory. profile.md and notes.md go into every conversation and errand; one file per
 person, place or preference is written by the nightly run (consolidate.py) and found by grep (errands) or
-recall (Nova). journal/ is the day's raw conversation for that run: gitignored, kept 7 days.
+recall (Nova). journal/ is the day's raw conversation for that run: gitignored, deleted once a run has filed it
+and it is over 7 days old. forget removes lines, not files: a person's file keeps its name and heading, and git
+history keeps everything (README).
 
 While the nightly run holds .lock (tidying), the live tools never commit, so they cannot stage its half-edits,
 and forget waits for it to finish, so the run cannot write a forgotten fact back; forget holds .lock itself for its
