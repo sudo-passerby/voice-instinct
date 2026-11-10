@@ -17,6 +17,7 @@ from budget import TimeBudget
 from claude_cli import ClaudeCodeBackend
 from clock import current_time
 from config import REPO_ROOT, load
+from confirm import name_words
 from debugbrowser import launch as launch_debug_browser
 from delegate import errand_lock, make_tools
 from folders import Folders, make_folder_tools
@@ -194,7 +195,7 @@ async def bot(runner_args: RunnerArguments):
         tools += [*make_tools(backend, registry, _run_settings, on_finish=bridge.expire_session,
                              workspace_root=Path(cfg.workspace_dir).expanduser(), steps=STEPS, budget=BUDGET,
                              memory=MEMORY, lock=ERRANDS, bridge=bridge, folders=FOLDERS),
-                 *make_bridge_tools(bridge, relay, registry, backend),
+                 *make_bridge_tools(bridge, relay, registry, backend, names=name_words(cfg.wake_phrases)),
                  *make_folder_tools(FOLDERS, bridge, registry, Path.home())]
     else:
         logger.warning("claude CLI not found; running front-model-only")

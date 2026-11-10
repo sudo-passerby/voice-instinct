@@ -268,7 +268,8 @@ async def start_session(relay, task, context, wake=None):
     await relay.attach_and_pump(task, context, wake)
 
 
-def make_bridge_tools(bridge, relay, registry, backend):
+def make_bridge_tools(bridge, relay, registry, backend, names=()):
+    """names: confirm.name_words(cfg.wake_phrases), so "Nova, yes" is a yes."""
     @tool_options(cancel_on_interruption=False)
     async def answer_question(params: FunctionCallParams, question_id: int):
         """Record the user's spoken yes or no for a pending Claude question. Call only after the user has answered it.
@@ -288,8 +289,8 @@ def make_bridge_tools(bridge, relay, registry, backend):
             return
         # A folder question (folders.py) also tells "just this once" from "always", from the user's words alone.
         # allow_folder's own question already asks for always: there a plain yes is always (folders.py).
-        verdict = (classify(reply) if q["kind"] != "folder" else
-                   standing_answer(reply) if q["tool_name"] == "allow_folder" else grant_answer(reply))
+        verdict = (classify(reply, q["prompt"], names) if q["kind"] != "folder" else
+                   standing_answer(reply, names) if q["tool_name"] == "allow_folder" else grant_answer(reply, names))
         if verdict == "unclear":
             relay.reask(question_id)  # a fresh marker, so only an answer to the new ask can count
             await params.result_callback(

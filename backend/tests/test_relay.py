@@ -115,6 +115,31 @@ def test_answer_yes_after_the_question_allows():
     assert out[-1]["status"] == "allowed" and fut.result() == "allow"
 
 
+def _answered(prompt, said, names=()):
+    async def go():
+        reg, relay, task, ctx, bridge = setup("hi")
+        q = reg.add_question("s1", "permission", prompt, "mcp__browser__browser_click", {"ref": "e3"})
+        fut = asyncio.get_running_loop().create_future()
+        bridge._waiters[q] = fut
+        await relay.raise_question(q)
+        answer = make_bridge_tools(bridge, relay, reg, FakeBackend(), names=names)[0]
+        ctx.msgs.append({"role": "assistant", "content": "Allow it?"})
+        ctx.msgs.append({"role": "user", "content": said})
+        p, out = params(ctx)
+        await answer(p, q)
+        return out[-1]["status"]
+
+    return run(go())
+
+
+def test_the_answer_is_judged_against_the_question_and_without_the_assistants_name():
+    from confirm import name_words
+    assert _answered("browser_click: Cancel subscription (ref e3)", "yes, cancel it") == "allowed"
+    assert _answered("browser_click: Pay now (ref e3)", "yes, cancel it") == "denied"
+    assert _answered("browser_click: Pay now (ref e3)", "Nova, yes", name_words(["nova"])) == "allowed"
+    assert _answered("browser_click: Pay now (ref e3)", "Nova no", name_words(["nova"])) == "denied"
+
+
 def test_yes_spoken_before_the_question_cannot_approve():
     async def go():
         reg, relay, task, ctx, bridge = setup("yes do the cleanup")  # earlier "yes"
