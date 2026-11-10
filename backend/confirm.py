@@ -44,13 +44,23 @@ def _words(reply: str, names=()) -> list[str]:
     return [w for w in text.split() if w not in names]
 
 
+# A step that may spend money or commit the user (hooks.py's purchase guard). Whole words: "add to cart", "reorder"
+# and "bookmark" stay unmatched. Keep README.md's list in step with this one.
+MONEY_WORDS = re.compile(r"\b(pay|payment|buy|purchase|complete purchase|order|checkout|check out|subscribe"
+                         r"|subscription|trial|upgrade|renew|confirm|confirm booking|book|booking|book now"
+                         r"|complete booking|reserve|reservation|request ride|get tickets|donate|bid|place bid)\b",
+                         re.I)
 _CANCELS = re.compile(r"^\W*(cancel|stop|unsubscribe|end)\b", re.I)
+# What a cancellation cancels: these money words name it, every other one pays ("Stop & Pay ₹500").
+_CANCELLED = {"payment", "order", "subscription", "trial", "booking", "reservation"}
 
 
 def names_a_cancellation(target_name) -> bool:
-    """A browser element whose real name starts with cancel, stop, unsubscribe or end (whole words): the
-    "Cancel subscription" button, not "Pay & stop ads"."""
-    return bool(_CANCELS.match(str(target_name or "")))
+    """A browser element whose real name starts with cancel, stop, unsubscribe or end (whole words) and pays for
+    nothing: the "Cancel subscription" button, not "Pay & stop ads" or "Cancel anytime – Subscribe ₹499"."""
+    name = str(target_name or "")
+    m = _CANCELS.match(name)
+    return bool(m) and all(w.group(0).lower() in _CANCELLED for w in MONEY_WORDS.finditer(name, m.end()))
 
 
 def _verdict(reply: str, question: str = "", names=(), about_cancel=None):

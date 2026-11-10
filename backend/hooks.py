@@ -12,6 +12,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Request
 from loguru import logger
 
+from confirm import MONEY_WORDS
 from debugbrowser import _texts, page_url
 
 _EVENTS = ("PermissionRequest", "Stop", "SessionEnd", "SessionStart")
@@ -23,11 +24,6 @@ _EVENTS = ("PermissionRequest", "Stop", "SessionEnd", "SessionStart")
 PRE_TOOL_MATCHER = ("^mcp__browser__browser_(click|fill_form|press_key|type|press_sequentially|keydown"
                     "|select_option|handle_dialog)$")
 _SUBMITS_ONLY = ("mcp__browser__browser_type", "mcp__browser__browser_press_sequentially")
-# Whole words: "add to cart", "reorder" and "bookmark" stay unmatched. Keep README.md's list in step with this one.
-MONEY_WORDS = re.compile(r"\b(pay|payment|buy|purchase|complete purchase|order|checkout|check out|subscribe"
-                         r"|subscription|trial|upgrade|renew|confirm|confirm booking|book|booking|book now"
-                         r"|complete booking|reserve|reservation|request ride|get tickets|donate|bid|place bid)\b",
-                         re.I)
 # Debug mode's step hook (steps.py): every tool the agent uses. steps.SCREENSHOT_TOOLS picks the ones
 # that change the page and get a screenshot.
 STEP_MATCHER = "*"
@@ -267,7 +263,8 @@ class HookBridge:
         real = [_real_name(n) for n in nodes]
         # The real target's name, the page's own when the snapshot knows it, for relay: only a target that cancels
         # or stops lets "yes, cancel it" approve (confirm.names_a_cancellation). Never sent back to Claude.
-        name = (nodes[0][1] or nodes[0][2]) if nodes else str(inp.get("element") or "")
+        # No node: "" (no cancel question), never the agent's own `element`.
+        name = (nodes[0][1] or nodes[0][2]) if nodes else ""
         return pre_tool_response(await self.ask(sid, "permission", describe(p.get("tool_name"), inp, page, real),
                                                 p.get("tool_name"), {**inp, "_target_name": name}))
 
