@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
 # voice-instinct installer: system packages, uv, models, backend, frontend, services.
-# Usage: ./install.sh [--dry-run] [--uninstall] [--purge]
+# Usage: ./install.sh [--dry-run] [--uninstall] [--purge [--yes]]
+# --purge uninstalls and deletes ~/.voice-instinct; it asks first, and with no terminal it needs --yes.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOME_DIR="${VI_HOME:-$HOME}"
 OS_RELEASE="${VI_OS_RELEASE:-/etc/os-release}"
-DRY=0 UNINSTALL=0 PURGE=0
+DRY=0 UNINSTALL=0 PURGE=0 YES=0
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY=1 ;;
     --uninstall) UNINSTALL=1 ;;
-    --purge) PURGE=1 ;;
+    --purge) PURGE=1 UNINSTALL=1 ;;  # never a reinstall: it deletes the data the install needs
+    --yes) YES=1 ;;
     *) echo "unknown option: $arg" >&2; exit 2 ;;
   esac
 done
@@ -318,21 +320,34 @@ EOF
   esac
 }
 
+confirm_purge() {
+  say "--purge deletes $HOME_DIR/.voice-instinct, which cannot be undone:"
+  say "  the speech models, the database (errands, reminders, the conversation history), the errand workspace,"
+  say "  your memory (profile, people, places, notes and its git history), the journals, any leftover voiceprint."
+  say "Kept: this repo's .env and config.toml."
+  if [ "$DRY" = 1 ] || [ "$YES" = 1 ]; then return; fi
+  local ok=n  # no terminal or no answer (CI, curl | bash) means no, as for sudo
+  if [ ! -t 0 ]; then echo "Not deleting anything without a terminal to ask on. To delete it all, re-run with --purge --yes." >&2; exit 1; fi
+  read -r -p "Delete all of it? [y/N] " ok || ok=n
+  case "$ok" in [yY]*) ;; *) echo "Nothing deleted." >&2; exit 1 ;; esac
+}
+
 uninstall() {
+  if [ "$PURGE" = 1 ]; then confirm_purge; fi  # before anything: a "no" leaves it all installed
   # idempotent: a missing unit or no user systemd session must not stop the cleanup
   if [ -x "$LAUNCHER" ] || [ "$DRY" = 1 ]; then  # the orb would keep running until logout
     if [ "$DRY" = 1 ]; then run "$LAUNCHER" quit; else timeout 5 "$LAUNCHER" quit >/dev/null 2>&1 || true; fi
   fi
-  if [ "$DRY" = 1 ]; then run systemctl --user disable --now voice-instinct.service voice-instinct-memory.timer
-  else systemctl --user disable --now voice-instinct.service voice-instinct-memory.timer 2>/dev/null || true; fi
-  if [ -f "$QWEN_UNIT" ]; then  # its own call: disabling a unit that doesn't exist fails the whole call
-    if [ "$DRY" = 1 ]; then run systemctl --user disable --now voice-instinct-qwen.service
-    else systemctl --user disable --now voice-instinct-qwen.service 2>/dev/null || true; fi
-  fi
+  local u
+  for u in "$UNIT" "$MEMORY_TIMER" "$MEMORY_UNIT" "$QWEN_UNIT"; do
+    [ -f "$u" ] || continue  # one call each: disabling a unit that doesn't exist fails the whole call
+    if [ "$DRY" = 1 ]; then run systemctl --user disable --now "${u##*/}"
+    else systemctl --user disable --now "${u##*/}" 2>/dev/null || true; fi
+  done
   run rm -f "$UNIT" "$MEMORY_UNIT" "$MEMORY_TIMER" "$QWEN_UNIT" "$AUTOSTART" "$LAUNCHER"
   if [ "$DRY" = 1 ]; then run systemctl --user daemon-reload
   else systemctl --user daemon-reload 2>/dev/null || true; fi
-  if [ "$PURGE" = 1 ]; then say "remove data in $HOME_DIR/.voice-instinct (models, database, workspace)"; run rm -rf "$HOME_DIR/.voice-instinct"; fi
+  if [ "$PURGE" = 1 ]; then say "remove data in $HOME_DIR/.voice-instinct"; run rm -rf "$HOME_DIR/.voice-instinct"; fi
   local qwen=""; [ -d "$QWEN_DIR" ] && qwen=", plus about 10 GB for the Qwen GPU engine"
   say "voice-instinct removed$([ "$PURGE" = 1 ] || echo "; ~/.voice-instinct is kept: your data, plus about 2 GB of models, Node and the errand browser$qwen (--purge deletes it)")"
 }
@@ -351,6 +366,12 @@ if [ -n "$QWEN" ]; then qwen_install
 elif [ -d "$QWEN_DIR" ] || [ -d "$QWEN_MODEL" ] || [ -d "$QWEN_MODEL.part" ]; then
   say "The Qwen GPU engine is no longer used; to free about 10 GB: rm -rf $QWEN_DIR $QWEN_MODEL $QWEN_MODEL.part"
 fi
+# the owner voice check (#32) was removed in #41; its files are no longer read
+old_voice=()
+for f in "$MODELS/nemo_en_titanet_small.onnx" "$HOME_DIR/.voice-instinct/voiceprint.npz" "$HOME_DIR/.voice-instinct/learned_wake.json"; do
+  [ -e "$f" ] && old_voice+=("$f")
+done
+if [ "${#old_voice[@]}" -gt 0 ]; then say "The owner voice check (voiceprint) is no longer used; to remove its files: rm -f ${old_voice[*]}"; fi
 config_and_key
 run sh -c "cd '$REPO/backend' && $UV sync --python 3.13"
 # npm 12 blocks install scripts, so fetch the Electron binary explicitly (harmless where npm already did)
@@ -368,8 +389,14 @@ fi
 if [ "$(cat "${VI_USERNS_FILE:-/proc/sys/kernel/apparmor_restrict_unprivileged_userns}" 2>/dev/null)" = 1 ]; then
   helper="$REPO/frontend/node_modules/electron/dist/chrome-sandbox"
   say "Your system restricts user namespaces, so Electron's sandbox helper must be owned by root (sudo):"
-  run sudo chown root:root "$helper"
-  run sudo chmod 4755 "$helper"
+  ok=y
+  if [ "$DRY" = 0 ]; then  # no terminal (CI, curl | bash) means no: never run sudo unasked
+    ok=n; [ -t 0 ] && { read -r -p "Set it up now with sudo? [Y/n] " ok || ok=n; ok="${ok:-y}"; }
+  fi
+  case "$ok" in
+    [yY]*) run sudo chown root:root "$helper"; run sudo chmod 4755 "$helper" ;;
+    *) say "Skipped. The orb will not start until you run: sudo chown root:root $helper && sudo chmod 4755 $helper" ;;
+  esac
 fi
 if ! command -v claude >/dev/null; then
   say "Install Claude Code (https://code.claude.com/docs) and log in with 'claude', then re-run this script."

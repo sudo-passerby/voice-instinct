@@ -83,9 +83,45 @@ def test_uninstall_is_idempotent_when_systemctl_fails(tmp_path):
 
 def test_uninstall_purge_removes_data_even_when_systemctl_fails(tmp_path):
     home, env = uninstall_fixture(tmp_path)
-    r = subprocess.run(["bash", str(SCRIPT), "--uninstall", "--purge"], capture_output=True, text=True, env=env)
+    r = subprocess.run(["bash", str(SCRIPT), "--uninstall", "--purge", "--yes"], capture_output=True, text=True, env=env,
+                       stdin=subprocess.DEVNULL)
     assert r.returncode == 0, r.stderr
     assert not (home / ".voice-instinct").exists()
+
+
+def test_purge_alone_uninstalls_and_never_reinstalls(tmp_path):
+    out = run(tmp_path, "arch", "--purge", "--dry-run")[0].stdout
+    assert "remove data" in out and "rm -rf" in out
+    assert "pacman" not in out and "npm ci" not in out and "enable voice-instinct.service" not in out
+
+
+def test_purge_names_everything_it_deletes_and_what_it_keeps(tmp_path):
+    out = run(tmp_path, "arch", "--uninstall", "--purge", "--dry-run")[0].stdout
+    for what in ("models", "database", "workspace", "memory", "profile", "people", "git history", "journals",
+                 "conversation history", "voiceprint", ".env", "config.toml"):
+        assert what in out, what
+
+
+def test_purge_without_a_terminal_refuses_unless_yes(tmp_path):
+    home, env = uninstall_fixture(tmp_path)
+    r = subprocess.run(["bash", str(SCRIPT), "--purge"], capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL)
+    assert r.returncode != 0 and "--yes" in r.stderr
+    assert (home / ".voice-instinct/models/x").exists()  # nothing deleted
+    assert (home / ".config/systemd/user/voice-instinct.service").exists()  # nor half uninstalled
+
+
+@pytest.mark.parametrize("answer,deleted", [("n\n", False), ("y\n", True)])
+def test_purge_on_a_terminal_asks_first(tmp_path, answer, deleted):
+    import pty
+    home, env = uninstall_fixture(tmp_path)
+    master, slave = pty.openpty()
+    os.write(master, answer.encode())
+    try:
+        r = subprocess.run(["bash", str(SCRIPT), "--purge"], stdin=slave, capture_output=True, text=True, env=env, timeout=30)
+    finally:
+        os.close(slave)
+        os.close(master)
+    assert (home / ".voice-instinct/models/x").exists() != deleted, r.stdout + r.stderr
 
 
 def test_append_env_adds_missing_newline(tmp_path):
@@ -290,9 +326,27 @@ def test_the_nightly_memory_run_is_a_timer_that_catches_up_after_sleep(tmp_path)
     assert "Type=oneshot" in service and "python consolidate.py" in service and "VI_CLAUDE" in service
 
 
+UNITS = ("voice-instinct.service", "voice-instinct-memory.timer", "voice-instinct-memory.service", "voice-instinct-qwen.service")
+
+
+def test_uninstall_stops_each_installed_unit_on_its_own(tmp_path):
+    # One call for all used to fail as a whole when one unit was missing, leaving the backend running.
+    units = tmp_path / "home/.config/systemd/user"
+    units.mkdir(parents=True)
+    for u in UNITS[:3]:
+        (units / u).write_text("x")
+    lines = run(tmp_path, "arch", "--uninstall", "--dry-run")[0].stdout.splitlines()
+    for u in UNITS[:3]:
+        assert f"would run: systemctl --user disable --now {u}" in lines, u
+    assert not any("disable --now voice-instinct-qwen.service" in l for l in lines)  # not installed: no call
+
+
 def test_uninstall_removes_the_memory_timer(tmp_path):
+    units = tmp_path / "home/.config/systemd/user"
+    units.mkdir(parents=True)
+    (units / "voice-instinct-memory.timer").write_text("x")
     out = run(tmp_path, "arch", "--uninstall", "--dry-run")[0].stdout
-    assert "disable --now voice-instinct.service voice-instinct-memory.timer" in out and "voice-instinct-memory.service" in out
+    assert "disable --now voice-instinct-memory.timer" in out and "voice-instinct-memory.service" in out
 
 
 def test_install_starts_the_orb_in_a_desktop_session_and_says_how_otherwise(tmp_path):
@@ -535,3 +589,34 @@ def test_uninstall_removes_the_qwen_unit(tmp_path):
     assert any(l.startswith("would run: rm -f") and str(unit) in l for l in r.stdout.splitlines())
     assert "plus about 10 GB for the Qwen GPU engine" in r.stdout
     assert "Qwen" not in run_with_engine(tmp_path / "n", None, args=("--uninstall", "--dry-run")).stdout
+
+
+def test_a_re_run_offers_to_remove_the_old_voiceprint_files_without_deleting_them(tmp_path):
+    d = tmp_path / "home/.voice-instinct"
+    (d / "models").mkdir(parents=True)
+    for f in ("models/nemo_en_titanet_small.onnx", "voiceprint.npz", "learned_wake.json"):
+        (d / f).write_text("x")
+    r, _ = run(tmp_path, "arch", "--dry-run")
+    assert r.returncode == 0, r.stderr
+    hint = next(l for l in r.stdout.splitlines() if "voiceprint" in l and "rm -f" in l)
+    for f in ("models/nemo_en_titanet_small.onnx", "voiceprint.npz", "learned_wake.json"):
+        assert str(d / f) in hint and (d / f).exists()
+    assert "voiceprint" not in run(tmp_path / "n", "arch", "--dry-run")[0].stdout  # nothing left over: no hint
+
+
+def test_restricted_user_namespaces_without_a_terminal_skip_the_sudo_step_with_a_message(tmp_path):
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    (fake / "sudo").write_text(f"#!/bin/sh\ntouch {tmp_path}/sudo-ran\nexit 1\n")
+    (fake / "sudo").chmod(0o755)
+    src = SCRIPT.read_text()
+    block = src[src.index("# Ubuntu 24.04+"):src.index('if ! command -v claude')]
+    script = tmp_path / "helper.sh"
+    script.write_text(f'set -euo pipefail\nDRY=0 REPO=/r\nsay() {{ printf "==> %s\\n" "$*"; }}\nrun() {{ "$@"; }}\n{block}echo reached-the-end\n')
+    userns = tmp_path / "userns"
+    userns.write_text("1\n")
+    r = subprocess.run(["bash", str(script)], capture_output=True, text=True, stdin=subprocess.DEVNULL,
+                       env={**os.environ, "VI_USERNS_FILE": str(userns), "PATH": f"{fake}:{os.environ['PATH']}"})
+    assert r.returncode == 0 and "reached-the-end" in r.stdout, r.stderr
+    assert not (tmp_path / "sudo-ran").exists() and "sudo chmod 4755" in r.stdout + r.stderr  # says what to run
+
