@@ -262,8 +262,10 @@ def _click(element, target="e12", sid="s1", tool="mcp__browser__browser_click", 
 def _answer(b, reg, payload, decision):
     async def go():
         t = asyncio.create_task(b.on_pre_tool_use(payload))
-        for _ in range(5):
-            await asyncio.sleep(0)
+        for _ in range(100):  # a snapshot file is read in a thread first
+            await asyncio.sleep(0 if _ < 5 else 0.01)
+            if t.done() or reg.open_questions():
+                break
         qs = reg.open_questions()
         if qs and decision:
             b.resolve(qs[0]["id"], decision)
@@ -357,12 +359,18 @@ await page.getByRole('link', {{ name: 'Cart' }}).click();
 - [Snapshot]({SNAP_FILE})"""
 
 
+def _linked(b, sid, link, cwd="/w"):
+    b.note_page({"session_id": sid, "cwd": cwd, "tool_name": "mcp__browser__browser_click",
+                 "tool_response": [{"type": "text", "text": LINKED.replace(SNAP_FILE, link)}]})
+
+
 def test_a_snapshot_linked_as_a_file_is_read_when_the_step_is_judged(tmp_path):
     b, reg, _ = make()
-    b.note_page({"session_id": "s1", "cwd": str(tmp_path), "tool_name": "mcp__browser__browser_click",
-                 "tool_response": [{"type": "text", "text": LINKED}]})
+    b.register_run("s1", tmp_path)  # delegate's own folder for the run, never the payload's cwd
     f = tmp_path / SNAP_FILE
     f.parent.mkdir()
+    f.write_text('- button "Continue" [ref=e42]')
+    _linked(b, "s1", SNAP_FILE)
     f.write_text(SNAPSHOT.split("```yaml\n")[1].split("```")[0])  # read at PreToolUse time, not when linked
     out, qs = _answer(b, reg, _click("Continue", target="e42"), "deny")
     assert len(qs) == 1 and 'button "Pay ₹5000"' in qs[0]["prompt"]
@@ -372,9 +380,105 @@ def test_a_linked_file_outside_the_errands_folder_is_never_read(tmp_path):
     b, _, _ = make()
     (tmp_path / "w").mkdir()
     (tmp_path / "x.yml").write_text('- button "Pay" [ref=e42]')
-    b.note_page({"session_id": "s1", "cwd": str(tmp_path / "w"), "tool_name": "mcp__browser__browser_click",
-                 "tool_response": "- Page URL: https://a.example/\n- [Snapshot](../x.yml)"})
-    assert b._snapshot_text("s1") == ""
+    b.register_run("s1", tmp_path / "w")
+    _linked(b, "s1", "../x.yml", cwd=str(tmp_path / "w"))
+    assert "s1" not in b._snapshots
+
+
+def _pw_dir(root):
+    d = root / ".playwright-mcp"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def test_only_playwrights_own_snapshot_folder_is_trusted(tmp_path):
+    # The agent can write any .yml in its folder (browser_snapshot filename=, or its shell): never trusted.
+    b, reg, _ = make()
+    b.register_run("s1", tmp_path)
+    (tmp_path / "x.yml").write_text('- button "Continue" [ref=e7]')
+    _linked(b, "s1", "x.yml", cwd=str(tmp_path))
+    assert "s1" not in b._snapshots
+    # The agent cd'd into sub/ (the payload's cwd moves with it) and made its own sub/.playwright-mcp there.
+    (_pw_dir(tmp_path / "sub") / "page-1.yml").write_text('- button "Continue" [ref=e7]')
+    _linked(b, "s1", ".playwright-mcp/page-1.yml", cwd=str(tmp_path / "sub"))
+    assert "s1" not in b._snapshots
+    _linked(b, "s1", "sub/.playwright-mcp/page-1.yml", cwd=str(tmp_path / "sub"))
+    assert "s1" not in b._snapshots
+    # The real one, from the root delegate registered, whatever cwd the payload says.
+    (_pw_dir(tmp_path) / "page-1.yml").write_text('- button "Pay ₹5000" [ref=e7]')
+    _linked(b, "s1", "./.playwright-mcp/page-1.yml", cwd=str(tmp_path / "sub"))
+    out, qs = _answer(b, reg, _click("Continue", target="e7"), "deny")
+    assert len(qs) == 1 and 'button "Pay ₹5000"' in qs[0]["prompt"]
+
+
+def test_no_registered_run_means_no_snapshot_file_is_ever_read(tmp_path):
+    b, _, _ = make()
+    (_pw_dir(tmp_path) / "page-1.yml").write_text('- button "Continue" [ref=e7]')
+    _linked(b, "s1", ".playwright-mcp/page-1.yml", cwd=str(tmp_path))
+    assert "s1" not in b._snapshots
+    b.register_run("s1", tmp_path)
+    b.register_run("s1", None)  # the run ended
+    _linked(b, "s1", ".playwright-mcp/page-1.yml", cwd=str(tmp_path))
+    assert "s1" not in b._snapshots
+
+
+def test_a_symlinked_snapshot_is_never_followed(tmp_path):
+    import os
+    b, reg, _ = make()
+    b.register_run("s1", tmp_path)
+    (tmp_path / "x.yml").write_text('- button "Continue" [ref=e7]')
+    os.symlink(tmp_path / "x.yml", _pw_dir(tmp_path) / "page-1.yml")
+    _linked(b, "s1", ".playwright-mcp/page-1.yml")
+    assert "s1" not in b._snapshots
+    # A real file swapped for a symlink after it was linked: the guard can't judge it, so it denies.
+    real = tmp_path / ".playwright-mcp" / "page-2.yml"
+    real.write_text('- button "Pay ₹5000" [ref=e7]')
+    _linked(b, "s1", ".playwright-mcp/page-2.yml")
+    real.unlink()
+    os.symlink(tmp_path / "x.yml", real)
+    out, qs = _answer(b, reg, _click("Continue", target="e7"), None)
+    assert qs == [] and out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_a_fifo_never_blocks_the_guard_and_is_denied(tmp_path):
+    import os
+    b, reg, _ = make()
+    b.register_run("s1", tmp_path)
+    os.mkfifo(_pw_dir(tmp_path) / "page-1.yml")
+    _linked(b, "s1", ".playwright-mcp/page-1.yml")
+    assert "s1" not in b._snapshots
+    real = tmp_path / ".playwright-mcp" / "page-2.yml"
+    real.write_text('- button "Pay ₹5000" [ref=e7]')
+    _linked(b, "s1", ".playwright-mcp/page-2.yml")
+    real.unlink()
+    os.mkfifo(real)  # swapped after it was linked: opening it must not wait for a writer
+    out, qs = _answer(b, reg, _click("Continue", target="e7"), None)  # _answer gives it 1 s
+    assert qs == [] and out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_a_snapshot_the_guard_cannot_read_denies_the_step(tmp_path, monkeypatch):
+    import time
+    import hooks
+    b, reg, _ = make()
+    b.register_run("s1", tmp_path)
+    f = _pw_dir(tmp_path) / "page-1.yml"
+    f.write_text('- button "Pay ₹5000" [ref=e7]')
+    _linked(b, "s1", ".playwright-mcp/page-1.yml")
+    f.unlink()  # gone: an error
+    out, qs = _answer(b, reg, _click("Continue", target="e7"), None)
+    assert qs == [] and out["hookSpecificOutput"]["permissionDecision"] == "deny"
+    f.write_text('- button "Pay ₹5000" [ref=e7]')
+    monkeypatch.setattr(hooks, "SNAPSHOT_READ_TIMEOUT", 0.05)
+    monkeypatch.setattr(hooks, "_read_snapshot", lambda path: time.sleep(0.5))  # a read that hangs: a timeout
+    out, qs = _answer(b, reg, _click("Continue", target="e7"), None)
+    assert qs == [] and out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_a_purchase_step_with_no_session_is_denied():
+    b, reg, _ = make()
+    out, qs = _answer(b, reg, {**_click("Pay now"), "session_id": None}, None)
+    assert qs == [] and out["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert _answer(b, reg, {**_click("Search"), "session_id": None}, None) == ({}, [])
 
 
 def test_a_ref_inside_a_name_or_text_is_never_taken_for_the_nodes_own():

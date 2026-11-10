@@ -177,6 +177,8 @@ def make_tools(backend, registry, settings_for, on_finish=None, workspace_root=N
                 # now so the sandbox has a real path to deny.
                 (wd / ".playwright-mcp").mkdir(parents=True, exist_ok=True)
                 extra["cwd"] = str(wd)
+                if bridge:  # the only folder whose snapshots the guard reads for this run (hooks.py)
+                    bridge.register_run(sid, wd)
                 if steps:  # debug mode: a browser of our own and every step recorded (steps.py)
                     mcp = await steps.start(sid, str(wd))
                     settings = settings_for(sid, str(wd), **extra)
@@ -202,6 +204,8 @@ def make_tools(backend, registry, settings_for, on_finish=None, workspace_root=N
                         logger.error(f"debug record not finished: {e!r}")
                 if budget:
                     budget.finish(sid)
+                if bridge:
+                    bridge.register_run(sid, None)
                 if on_finish:  # a run that ended can no longer use an answer
                     on_finish(sid)
             if resume and res.is_error and "No conversation found" in res.text:

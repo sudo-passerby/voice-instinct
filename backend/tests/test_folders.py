@@ -295,6 +295,20 @@ def test_every_run_gets_its_own_folder_for_the_snapshot_denies(w):
     assert (Path(w.cwds[-1]) / ".playwright-mcp").is_dir()  # made first, so the sandbox has a path to deny
 
 
+def test_the_purchase_guard_reads_snapshots_only_from_the_runs_own_folder(w):
+    # Pinned by delegate for the run (hooks.register_run), never taken from a hook payload's cwd; cleared after.
+    seen = []
+    run = w.backend.run
+
+    async def spy(task, session_id=None, **kw):
+        seen.append(w.bridge._roots.get(session_id))
+        return await run(task, session_id=session_id, **kw)
+
+    w.backend.run = spy
+    out, _ = w.go(w.delegate, "find flights")
+    assert seen == [Path(w.backend.calls[-1]["cwd"])] and w.bridge._roots == {}
+
+
 def test_a_refused_errand_leaves_no_empty_workspace_folder(w):
     out, _ = w.go(w.delegate, "read the plan", "~/Documents/trip", reply="no")
     assert out[-1]["status"] == "refused"

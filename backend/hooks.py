@@ -6,6 +6,7 @@ import json
 import os
 import re
 import secrets
+import stat
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
@@ -30,7 +31,8 @@ MONEY_WORDS = re.compile(r"\b(pay|payment|buy|purchase|complete purchase|order|c
 # Debug mode's step hook (steps.py): every tool the agent uses. steps.SCREENSHOT_TOOLS picks the ones
 # that change the page and get a screenshot.
 STEP_MATCHER = "*"
-SNAPSHOT_CAP = 200_000  # characters of the latest page snapshot kept per session
+SNAPSHOT_CAP = 200_000  # characters of the latest page snapshot kept per session (bytes, read from its file)
+SNAPSHOT_READ_TIMEOUT = 2  # seconds to read a snapshot file; bot.py adds it to the hook's own timeout
 
 
 _IS_REF = re.compile(r"^(f\d+)?e\d+$")  # Playwright MCP 0.0.83's own test (targetLocators): else it is a selector
@@ -70,6 +72,21 @@ def snapshot_node(snapshot, ref):
                 name = m.group(2)[1:-1]
             return m.group(1), str(name), (m.group(4) or "").strip()
     return None
+
+
+def _read_snapshot(path):
+    """A snapshot file's text, capped. Never follows a symlink and never waits on a FIFO or a device: only a
+    regular file is read."""
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(f"not a regular file: {path}")
+        data = b""
+        while len(data) < SNAPSHOT_CAP and (chunk := os.read(fd, SNAPSHOT_CAP - len(data))):
+            data += chunk
+    finally:
+        os.close(fd)
+    return data.decode("utf-8", errors="replace")
 
 
 def _real_name(node):
@@ -128,6 +145,15 @@ class HookBridge:
         self._waiters: dict[int, asyncio.Future] = {}
         self._pages: dict[str, str] = {}  # session -> the page its browser last reported (PostToolUse)
         self._snapshots: dict[str, str | Path] = {}  # session -> its latest snapshot: text (capped) or its file
+        self._roots: dict[str, Path] = {}  # session -> the errand folder delegate made for its run (register_run)
+
+    def register_run(self, session_id, workdir):
+        """The folder this session's run works in, as delegate made it (None: the run ended). Only its
+        .playwright-mcp snapshots are ever read; never a folder a hook payload names."""
+        if workdir is None:
+            self._roots.pop(session_id, None)
+        else:
+            self._roots[session_id] = Path(workdir)
 
     def resolve(self, qid, decision):
         fut = self._waiters.get(qid)
@@ -166,34 +192,35 @@ class HookBridge:
         link = next((m.group(1) for t in texts if (m := _SNAPSHOT_LINK.search(t))), None)
         if inline:
             self._snapshots[sid] = inline[:SNAPSHOT_CAP]
-        elif link and (f := self._snapshot_file(link, p.get("cwd"))):
+        elif link and (f := self._snapshot_file(link, self._roots.get(sid))):
             self._snapshots[sid] = f  # a page-changing step: a page-*.yml link, read when a step is judged
+        elif link:
+            self._snapshots.pop(sid, None)  # a file it may not read: never say an older snapshot's names
         elif url:
             self._snapshots.pop(sid, None)  # a new page and no snapshot of it: never say the old page's names
 
     @staticmethod
-    def _snapshot_file(link, cwd):
-        """The linked snapshot file, only inside the errand's own folder (Playwright MCP writes it to
-        <cwd>/.playwright-mcp and links it relative to cwd). ponytail: its tmpdir fallback (cwd not writable) is
-        not followed; the click is then judged on the agent's words and the page URL."""
-        if not cwd:
+    def _snapshot_file(link, root):
+        """The linked snapshot file, only a regular file in <root>/.playwright-mcp: Playwright MCP writes it
+        there (its cwd is the run's folder) and the sandbox denies that folder to the agent (autonomy.py); any
+        other .yml the agent could have written. ponytail: its tmpdir fallback (cwd not writable) is not followed;
+        the click is then judged on the agent's words and the page URL."""
+        if root is None:
             return None
         try:
-            root = Path(cwd).resolve()
-            f = (root / link).resolve()
+            root = Path(root).resolve()
+            f = (root / link).resolve()  # a symlink resolves to where it points, so one out is refused
+            ok = f.suffix == ".yml" and f.is_relative_to(root / ".playwright-mcp") and f.is_file()
         except (OSError, ValueError, RuntimeError):
             return None
-        return f if f.suffix == ".yml" and f.is_relative_to(root) else None
+        return f if ok else None
 
-    def _snapshot_text(self, sid):
-        """The latest snapshot's text, capped; a linked file is read now (the hook runs outside the sandbox)."""
+    async def _snapshot_text(self, sid):
+        """The latest snapshot's text, capped; a linked file is read now (the hook runs outside the sandbox),
+        off the event loop. Raises if it can't be read in time."""
         snap = self._snapshots.get(sid)
         if isinstance(snap, Path):
-            try:
-                with open(snap, encoding="utf-8", errors="replace") as f:
-                    return f.read(SNAPSHOT_CAP)
-            except OSError:
-                return ""
+            return await asyncio.wait_for(asyncio.to_thread(_read_snapshot, snap), SNAPSHOT_READ_TIMEOUT)
         return snap or ""
 
     async def on_pre_tool_use(self, p):
@@ -208,11 +235,17 @@ class HookBridge:
         page = self._pages.get(sid)
         dialog = tool == "mcp__browser__browser_handle_dialog"
         # `element` is written by the agent: also judge the line the page itself has for each ref.
-        snapshot = self._snapshot_text(sid) if _refs(inp) else ""
+        try:
+            snapshot = await self._snapshot_text(sid) if _refs(inp) else ""
+        except (OSError, TimeoutError) as e:  # a guard that can't see the page can't judge the step: deny it
+            logger.warning(f"hook PreToolUse: snapshot unreadable, step denied ({e!r})")
+            return pre_tool_response(None)
         nodes = [n for r in _refs(inp) if (n := snapshot_node(snapshot, r))]
-        if not sid or not (dialog or MONEY_WORDS.search(" ".join([_browser_target(inp), page or "",
-                                                                    *(" ".join(n) for n in nodes)]))):
+        if not (dialog or MONEY_WORDS.search(" ".join([_browser_target(inp), page or "",
+                                                         *(" ".join(n) for n in nodes)]))):
             return {}
+        if not sid:  # no session to ask in
+            return pre_tool_response(None)
         logger.info(f"hook PreToolUse: a purchase-like step ({sid[:8]})")
         self.reg.upsert_session(sid, cwd=p.get("cwd"))
         self.reg.add_event(sid, "PreToolUse", p)

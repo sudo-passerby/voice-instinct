@@ -26,7 +26,7 @@ from delegate import errand_lock, make_tools
 from folders import Folders, make_folder_tools
 from gui import make_gui_router
 from guard import refuse_other_origins
-from hooks import HookBridge, hide_hook_tokens, load_token, make_router, write_run_settings
+from hooks import SNAPSHOT_READ_TIMEOUT, HookBridge, hide_hook_tokens, load_token, make_router, write_run_settings
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.frames.frames import TTSSpeakFrame
 from pipecat.pipeline.pipeline import Pipeline
@@ -158,7 +158,8 @@ def _run_settings(sid, debug_cwd=None, grant=None, cwd=None):
     return write_run_settings(
         DATA / "runs", sid, HOOK_TOKEN, HOOK_PORT,
         extra=autonomy if debug_cwd is None else with_debug_record(autonomy, debug_cwd, Path.home()),
-        hook_timeout=int(cfg.permission_timeout) + 10)  # Claude must outwait our own question timeout
+        # Claude must outwait our question timeout plus a snapshot read (a timed-out hook is no deny)
+        hook_timeout=int(cfg.permission_timeout + SNAPSHOT_READ_TIMEOUT) + 10)
 
 NO_AGENT = (
     " Right now Claude Code is not available on this computer, so you cannot run "
