@@ -52,7 +52,7 @@ def test_a_long_report_and_caption_are_cut_to_the_bot_api_limits():
 
 def test_telegram_failures_never_raise():
     server, seen = _bot(status=403)
-    assert _run(server, [("send_message", "hi"), ("send_photo", b"p", "c")]) == [False, False]  # logged, not raised
+    assert _run(server, [("send_message", "hi"), ("send_photo", b"p", "c")]) == [None, None]  # a refusal: logged, not raised, and None so callers stop retrying
     assert [m for _, m, _ in seen] == ["sendMessage", "sendPhoto"]  # each tried once: a refusal is not retried
     assert asyncio.run(Telegram("T", 1, base="http://127.0.0.1:9").send_message("hi")) is False  # nothing listening
 
