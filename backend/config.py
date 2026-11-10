@@ -25,8 +25,7 @@ _SECTIONS = {
     "assistant": {"name": "name", "awake_timeout": "awake_timeout"},
     "model": {"provider": "provider", "model": "model", "api_key_env": "api_key_env", "base_url": "base_url"},
     "gui": {"size": "gui_size", "position": "gui_position"},
-    "paths": {"models_dir": "models_dir", "data_dir": "data_dir", "workspace_dir": "workspace_dir",
-              "backend_cwd": "backend_cwd"},
+    "paths": {"workspace_dir": "workspace_dir", "backend_cwd": "backend_cwd"},  # data_dir, models_dir: load() refuses
     "agent": {"permission_mode": "permission_mode", "backend_timeout": "backend_timeout",
               "permission_timeout": "permission_timeout"},
     "debug": {"browser_steps": "debug_browser_steps"},
@@ -80,6 +79,10 @@ class Config:
 def load(path=None) -> Config:
     p = Path(path) if path else REPO_ROOT / "config.toml"
     data = tomllib.loads(p.read_text()) if p.exists() else {}
+    for key in ("data_dir", "models_dir"):  # kept as fields (tests set them), but never from the file
+        if key in data or key in (data.get("paths") if isinstance(data.get("paths"), dict) else {}):
+            raise ValueError(f"config.toml: [paths] {key} can't be changed: the installer and the errand browser "
+                             f"always use ~/.voice-instinct. Remove that line.")
     known = {f.name for f in fields(Config)}
     values = {k: v for k, v in data.items() if k in known}  # legacy flat keys
     for section, mapping in _SECTIONS.items():

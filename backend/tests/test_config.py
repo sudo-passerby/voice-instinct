@@ -37,12 +37,22 @@ def test_sectioned_file_maps_to_fields(tmp_path):
         '[assistant]\nname = "Juno"\nawake_timeout = 12\n'
         '[model]\nprovider = "ollama"\nmodel = "qwen3:8b"\n'
         '[gui]\nsize = 200\nposition = "top-left"\n'
-        '[paths]\nmodels_dir = "/m"\n'
+        '[paths]\nworkspace_dir = "/w"\n'
         '[agent]\npermission_mode = "acceptEdits"\n'
     )
     c = load(f)
     assert (c.name, c.awake_timeout, c.provider, c.model) == ("Juno", 12, "ollama", "qwen3:8b")
-    assert (c.gui_size, c.gui_position, c.models_dir, c.permission_mode) == (200, "top-left", "/m", "acceptEdits")
+    assert (c.gui_size, c.gui_position, c.workspace_dir, c.permission_mode) == (200, "top-left", "/w", "acceptEdits")
+
+
+@pytest.mark.parametrize("body", ['[paths]\ndata_dir = "/d"\n', '[paths]\nmodels_dir = "/m"\n', 'data_dir = "/d"\n',
+                                  'models_dir = "/m"\n'])
+def test_data_and_models_folders_cannot_be_moved_in_the_config(tmp_path, body):
+    # The installer and the errand browser always use ~/.voice-instinct: a moved data_dir would split the app.
+    f = tmp_path / "c.toml"
+    f.write_text(body)
+    with pytest.raises(ValueError, match="~/.voice-instinct"):
+        load(f)
 
 
 def test_flat_legacy_file_still_works(tmp_path):
