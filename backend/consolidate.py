@@ -6,6 +6,7 @@ Instinct's background job does about once every 24 hours. Run by the voice-insti
 import asyncio
 import json
 import os
+import shlex
 import subprocess
 import sys
 from datetime import date, timedelta
@@ -21,6 +22,10 @@ from memory import CONTEXT_CAP, Memory
 PROFILE_CAP = CONTEXT_CAP * 3 // 4  # the rest of the prompt budget is for notes remembered since
 
 KEEP_JOURNALS = timedelta(days=7)  # raw transcripts: kept only long enough to retry a failed run
+EDITED = "runs/consolidate.edited"  # under the data dir: each file the run is about to write, logged by its hook
+# The PreToolUse hook's command (Claude Code passes the tool call as JSON on stdin): append the path it writes.
+_LOG_EDIT = ("import json, sys; i = json.load(sys.stdin).get('tool_input') or {}; "
+             "open(sys.argv[1], 'a').write((i.get('file_path') or i.get('notebook_path') or '') + '\\n')")
 
 CONSOLIDATE_PROMPT = f"""You maintain the user's long-term memory: the markdown files in this folder (a git repo).
 The user talks to a voice assistant that runs errands for them; it reads these files in every conversation.
@@ -67,7 +72,11 @@ def _settings(memory):
     data = memory.root.parent
     path = data / "runs" / "consolidate.json"  # runs/ is denied to errands
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(consolidation_settings(Path.home(), REPO_ROOT, data)))
+    s = consolidation_settings(Path.home(), REPO_ROOT, data)
+    # A failed run's rollback undoes only the files the run wrote (logged here), never a hand edit made meanwhile.
+    s["hooks"] = {"PreToolUse": [{"matcher": "Edit|Write|MultiEdit|NotebookEdit", "hooks": [
+        {"type": "command", "command": shlex.join([sys.executable, "-c", _LOG_EDIT, str(data / EDITED)])}]}]}
+    path.write_text(json.dumps(s))
     return str(path)
 
 
@@ -87,6 +96,26 @@ def _lines(path):
     return path.read_text().splitlines(keepends=True) if path.exists() else []
 
 
+def _undo_run(memory, before, edited):
+    """Put back, as they were at `before`, only the files the run wrote (its hook's log), so a file the user
+    edited during the run is left alone. Never the journal, nor .git; notes.md is the caller's."""
+    root = memory.root.resolve()
+    try:
+        paths = {(memory.root / l.strip()).resolve() for l in edited.read_text().splitlines() if l.strip()}
+    except OSError:
+        paths = set()  # no log: the run wrote nothing
+    for p in sorted(paths):
+        if not p.is_relative_to(root) or p == root:
+            continue
+        rel = p.relative_to(root).as_posix()
+        if rel == "notes.md" or rel.split("/")[0] in ("journal", ".git"):
+            continue
+        if memory._git("cat-file", "-e", f"{before}:{rel}", check=False).returncode == 0:
+            memory._git("checkout", before, "--", rel)
+        else:  # new in this run
+            p.unlink(missing_ok=True)
+
+
 async def _consolidate(memory, backend, today, settings) -> bool:
     journals, notes_path = pending(memory, today), memory.root / "notes.md"
     notes = _lines(notes_path)
@@ -99,27 +128,29 @@ async def _consolidate(memory, backend, today, settings) -> bool:
         logger.error("memory: uncommitted changes could not be committed; not running, so none is lost")
         return False
     before = memory._git("rev-parse", "HEAD").stdout.strip()
+    edited = memory.root.parent / EDITED
+    edited.parent.mkdir(parents=True, exist_ok=True)
+    edited.unlink(missing_ok=True)
     # ponytail: a run killed mid-way (shutdown) is not rolled back; the next run commits its partial edits as
     # "hand edits". Record `before` in a file and reset to it at the next start if that is ever seen.
     res = await backend.run(CONSOLIDATE_PROMPT + "\n\nInput files:\n" + "\n".join(files), cwd=str(memory.root),
                             settings=settings, extra_allowed=("Edit", "Write"))
-    now = _lines(notes_path)
-    late = now[len(notes):] if now[:len(notes)] == notes else [l for l in now if l not in notes]
-    if res.is_error:  # throw away its half-edits, never the journal, nor a note remembered meanwhile
-        logger.error(f"memory: consolidation failed: {res.text[:200]}")
-        memory._git("reset", "-q", "--hard", before)
-        memory._git("clean", "-fdq", "-e", "journal")
-        if late:
-            with open(notes_path, "a") as f:
-                f.writelines(late)
-        return False
-    memory._git("add", "-A")
-    changed = memory._git("diff", "--cached", "--quiet", before, "--", ".", ":(exclude)notes.md",
-                          check=False).returncode != 0
-    if changed:  # notes are filed only if the run wrote something; otherwise they wait for the next run
-        notes_path.write_text("".join(late))  # a remember during the run stays for the next one
-    elif notes:
-        logger.warning("memory: the run changed no file, so the notes are kept")
+    with memory.notes_lock():  # from reading the late notes to writing notes.md: a remember waits, never lost
+        now = _lines(notes_path)
+        late = now[len(notes):] if now[:len(notes)] == notes else [l for l in now if l not in notes]
+        if res.is_error:  # throw away its half-edits, never the journal, a hand edit, nor a note remembered meanwhile
+            logger.error(f"memory: consolidation failed: {res.text[:200]}")
+            _undo_run(memory, before, edited)
+            if notes or late:
+                notes_path.write_text("".join(notes + late))  # as it was at `before`, plus what came since
+            return False
+        memory._git("add", "-A")
+        changed = memory._git("diff", "--cached", "--quiet", before, "--", ".", ":(exclude)notes.md",
+                              check=False).returncode != 0
+        if changed:  # notes are filed only if the run wrote something; otherwise they wait for the next run
+            notes_path.write_text("".join(late))  # a remember during the run stays for the next one
+        elif notes:
+            logger.warning("memory: the run changed no file, so the notes are kept")
     with open(memory.root / ".consolidated", "a") as f:
         f.writelines(p.stem + "\n" for p in journals)
     memory.commit("consolidate " + (" ".join(p.stem for p in journals) or "notes"), tidying=True)

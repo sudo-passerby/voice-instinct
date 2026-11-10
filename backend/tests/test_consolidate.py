@@ -4,7 +4,7 @@ import subprocess
 from datetime import date, datetime
 
 from claude_cli import ClaudeCodeBackend
-from consolidate import consolidate, pending
+from consolidate import _settings, consolidate, pending
 from memory import Memory
 
 TODAY = date(2026, 10, 16)
@@ -31,7 +31,9 @@ def fake_claude(tmp_path, body):
 OK = ('mkdir -p people && printf "# Priya\\naliases: sister\\n- 2026-10-15: lives in Pune\\n" > people/priya.md\n'
       'echo "$*" > ../args\n'
       'echo \'{"type":"result","is_error":false,"result":"merged"}\'\n')
-FAIL = ('echo broken > profile.md; mkdir -p people && echo half > people/half.md\n'
+# The real run's PreToolUse hook logs each file it is about to write (consolidate._settings); the fakes log their own.
+FAIL = ('printf "profile.md\\n$PWD/people/half.md\\n" >> ../runs/consolidate.edited\n'
+        'echo broken > profile.md; mkdir -p people && echo half > people/half.md\n'
         'echo \'{"type":"result","is_error":true,"result":"Prompt is too long"}\'\n')
 
 
@@ -103,7 +105,8 @@ def test_a_note_remembered_during_a_failed_run_survives_the_rollback(tmp_path):
     assert (m.root / "profile.md").read_text() != "broken\n"
 
 
-def test_only_one_run_at_a_time(tmp_path):
+def test_only_one_run_at_a_time(tmp_path, monkeypatch):
+    monkeypatch.setattr("memory.LOCK_WAIT", 0.2)
     m = mem(tmp_path)
     with m.tidying():
         assert asyncio.run(consolidate(m, fake_claude(tmp_path, OK), TODAY)) is False
@@ -117,3 +120,47 @@ def test_notes_are_kept_when_the_run_filed_nothing(tmp_path):
     assert asyncio.run(consolidate(m, fake_claude(tmp_path, idle), TODAY)) is True
     assert "Is vegetarian" in (m.root / "notes.md").read_text()
     assert pending(m, TODAY) == []  # the journal day itself is done
+
+
+def test_a_failed_run_leaves_a_file_the_user_edited_meanwhile_alone(tmp_path):
+    # M-8: the rollback used to reset the whole repo, taking a hand edit made while the run was going.
+    m = mem(tmp_path)
+    m.remember("Is vegetarian")
+    (m.root / "people").mkdir()
+    (m.root / "people/mum.md").write_text("# Mum\n")
+    m.commit("mum")
+    by_hand = "echo '- 2026-10-16: added by hand' >> people/mum.md; echo '# Dad' > people/dad.md\n"
+    assert asyncio.run(consolidate(m, fake_claude(tmp_path, by_hand + FAIL), TODAY)) is False
+    assert (m.root / "people/mum.md").read_text() == "# Mum\n- 2026-10-16: added by hand\n"
+    assert (m.root / "people/dad.md").read_text() == "# Dad\n"
+    assert (m.root / "profile.md").read_text() != "broken\n" and not (m.root / "people/half.md").exists()
+    assert (m.root / "notes.md").read_text() == "- 2026-10-16: Is vegetarian\n"
+
+
+def test_the_run_logs_every_file_it_writes_for_the_rollback(tmp_path, monkeypatch):
+    import json
+    m = mem(tmp_path)
+    monkeypatch.setattr("consolidate.Path.home", lambda: tmp_path)
+    hook = json.loads(open(_settings(m)).read())["hooks"]["PreToolUse"][0]
+    assert {"Edit", "Write", "MultiEdit"} <= set(hook["matcher"].split("|"))
+    for tool_input in ({"file_path": str(m.root / "people/a.md")}, {"file_path": "people/b.md", "old_string": "x"}):
+        subprocess.run(hook["hooks"][0]["command"], shell=True, check=True, text=True, input=json.dumps(
+            {"hook_event_name": "PreToolUse", "tool_name": "Write", "tool_input": tool_input}))
+    assert (tmp_path / "runs/consolidate.edited").read_text() == f"{m.root}/people/a.md\npeople/b.md\n"
+
+
+def test_the_late_notes_are_read_and_written_under_the_notes_lock(tmp_path):
+    import threading
+    m = mem(tmp_path)
+    m.remember("Is vegetarian")
+    done = []
+    with m.notes_lock():  # a remember in the middle of the run's read-modify-write of notes.md
+        t = threading.Thread(target=lambda: done.append(asyncio.run(consolidate(m, fake_claude(tmp_path, OK), TODAY))))
+        t.start()
+        t.join(2)
+        waited = t.is_alive()
+        with open(m.root / "notes.md", "a") as f:
+            f.write("- 2026-10-16: Likes chai\n")
+    t.join(10)
+    assert waited and done == [True]
+    assert (m.root / "notes.md").read_text() == "- 2026-10-16: Likes chai\n"  # kept for the next run

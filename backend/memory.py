@@ -4,13 +4,16 @@ person, place or preference is written by the nightly run (consolidate.py) and f
 recall (Nova). journal/ is the day's raw conversation for that run: gitignored, kept 7 days.
 
 While the nightly run holds .lock (tidying), the live tools never commit, so they cannot stage its half-edits,
-and forget waits for it to finish, so the run cannot write a forgotten fact back.
+and forget waits for it to finish, so the run cannot write a forgotten fact back; forget holds .lock itself for its
+whole run, so the nightly run cannot start in the middle of it. .notes.lock is held around every read-modify-write of
+notes.md (remember, forget and the nightly run), so none of them overwrites a line another has just written.
 """
 
 import asyncio
 import fcntl
 import re
 import subprocess
+import time
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -30,7 +33,8 @@ PROMPT = (
     "call recall. ")
 ZONEINFO = Path("/usr/share/zoneinfo")
 _KEEP = ("#", "aliases:", "links:")  # structure forget never removes
-_IGNORE = ("journal/", ".lock")
+_IGNORE = ("journal/", ".lock", ".notes.lock")
+LOCK_WAIT = 5.0  # seconds the nightly run waits for a forget or a busy() probe to let go of .lock
 # hooksPath: the nightly run writes this folder from untrusted text, so a planted .git/hooks file must never run.
 # gpgsign: a user's global signing setting would otherwise make every commit fail.
 _GIT = ["git", "-c", "user.name=voice-instinct", "-c", "user.email=voice-instinct@localhost",
@@ -83,15 +87,32 @@ class Memory:
 
     @contextmanager
     def tidying(self):
-        """Held by the nightly run. Raises BlockingIOError if another run holds it."""
-        with open(self.root / ".lock", "w") as f:
-            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        """Held by the nightly run. Raises BlockingIOError if another run holds it. A forget or a busy() probe
+        holds .lock for moments only, so it is tried for LOCK_WAIT seconds: neither can make the run skip a night."""
+        with open(self.root / ".lock", "a") as f:
+            deadline = time.monotonic() + LOCK_WAIT
+            while True:
+                try:
+                    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.05)
+            yield
+
+    @contextmanager
+    def notes_lock(self):
+        """Held around each read-modify-write of notes.md; waits for the holder (they are all short)."""
+        with open(self.root / ".notes.lock", "a") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
             yield
 
     def busy(self) -> bool:
+        """The nightly run, or a forget, holds .lock. A shared probe: two probes never block each other."""
         try:
             with open(self.root / ".lock", "a") as f:
-                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)  # released when f closes
+                fcntl.flock(f, fcntl.LOCK_SH | fcntl.LOCK_NB)  # released when f closes
             return False
         except BlockingIOError:
             return True
@@ -166,7 +187,7 @@ class Memory:
             return
         fact = " ".join(fact.split())
         try:
-            with open(self.root / "notes.md", "a") as f:
+            with self.notes_lock(), open(self.root / "notes.md", "a") as f:
                 f.write(f"- {self.now():%Y-%m-%d}: {fact}\n")
         except OSError as e:
             logger.warning(f"not remembered: {e}")
@@ -180,8 +201,18 @@ class Memory:
         match = matcher(text)
         if not self.ok or match is None:
             return []
-        if self.busy():
+        try:
+            with open(self.root / ".lock", "a") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)  # the whole run: the nightly one cannot start meanwhile
+                with self.notes_lock():  # a remember meanwhile cannot be overwritten, nor its line kept
+                    return self._forget(match)
+        except BlockingIOError:
             return None
+        except OSError as e:
+            logger.warning(f"forget: memory not locked: {e}")
+            return []
+
+    def _forget(self, match):
         removed = []
         for p in self._files(journal=True):
             try:
@@ -197,8 +228,8 @@ class Memory:
                     p.write_text("".join(kept))
                 except OSError as e:
                     logger.warning(f"forget: {p} not changed: {e}")
-        if removed:
-            self.commit("forget: a fact the user asked to forget")  # the message must not repeat it
+        if removed:  # it holds .lock, so it commits as the nightly run does
+            self.commit("forget: a fact the user asked to forget", tidying=True)  # the message must not repeat it
         return removed
 
     def recall(self, query, limit=20, cap=4000) -> str:
