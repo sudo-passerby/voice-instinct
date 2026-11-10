@@ -16,8 +16,12 @@ from debugbrowser import page_url
 _EVENTS = ("PermissionRequest", "Stop", "SessionEnd", "SessionStart")
 # A browser step that may spend money or commit the user always goes to the user first (PreToolUse), whatever
 # auto mode's classifier would say: matched on the element's text, the form's field names and the page's URL.
-# browser_type only when it submits (presses Enter after); browser_evaluate is denied outright (autonomy.py).
-PRE_TOOL_MATCHER = "^mcp__browser__browser_(click|fill_form|press_key|type|keydown|select_option)$"
+# browser_type and browser_press_sequentially only when they submit (press Enter after); accepting a site's own
+# dialog (confirm("Pay ₹…?")) always asks, since its text is not in the tool input; browser_evaluate is denied
+# outright (autonomy.py).
+PRE_TOOL_MATCHER = ("^mcp__browser__browser_(click|fill_form|press_key|type|press_sequentially|keydown"
+                    "|select_option|handle_dialog)$")
+_SUBMITS_ONLY = ("mcp__browser__browser_type", "mcp__browser__browser_press_sequentially")
 # Whole words: "add to cart" and "reorder" stay unmatched.
 MONEY_WORDS = re.compile(r"\b(pay|payment|buy|purchase|order|checkout|check out|subscribe|subscription"
                          r"|confirm|confirm booking|book now|reserve|donate|bid|place bid)\b", re.I)
@@ -100,10 +104,14 @@ class HookBridge:
         """A click, form fill or key press that may pay, buy, order or book asks the user first. Otherwise no
         decision: Claude Code goes on as usual."""
         sid, inp = p.get("session_id"), p.get("tool_input") if isinstance(p.get("tool_input"), dict) else {}
-        if p.get("tool_name") == "mcp__browser__browser_type" and not inp.get("submit"):
+        tool = p.get("tool_name")
+        if tool in _SUBMITS_ONLY and not inp.get("submit"):
             return {}  # text in a box commits nothing; submitting it is a key press
+        if tool == "mcp__browser__browser_handle_dialog" and not inp.get("accept"):
+            return {}  # dismissing a dialog commits nothing
         page = self._pages.get(sid)
-        if not sid or not MONEY_WORDS.search(f"{_browser_target(inp)} {page or ''}"):
+        dialog = tool == "mcp__browser__browser_handle_dialog"
+        if not sid or not (dialog or MONEY_WORDS.search(f"{_browser_target(inp)} {page or ''}")):
             return {}
         logger.info(f"hook PreToolUse: a purchase-like step ({sid[:8]})")
         self.reg.upsert_session(sid, cwd=p.get("cwd"))

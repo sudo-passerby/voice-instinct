@@ -324,7 +324,8 @@ def test_every_run_gates_purchase_steps_through_the_pre_tool_hook(tmp_path):
     (entry,) = hooks["PreToolUse"]
     assert entry["hooks"][0]["url"].endswith("/hook/tok/PreToolUse") and entry["hooks"][0]["timeout"] == 100
     for tool in ("mcp__browser__browser_click", "mcp__browser__browser_fill_form", "mcp__browser__browser_press_key",
-                 "mcp__browser__browser_type", "mcp__browser__browser_keydown", "mcp__browser__browser_select_option"):
+                 "mcp__browser__browser_type", "mcp__browser__browser_keydown", "mcp__browser__browser_select_option",
+                 "mcp__browser__browser_press_sequentially", "mcp__browser__browser_handle_dialog"):
         assert re.search(entry["matcher"], tool), tool  # Claude Code tests it as a JS regex
     assert not re.search(PRE_TOOL_MATCHER, "mcp__browser__browser_clickx")
 
@@ -370,3 +371,20 @@ def test_a_broken_pre_tool_hook_denies_rather_than_lets_it_through():
               c.post("/hook/tok/PreToolUse", content=b"not json", headers={"content-type": "application/json"})):
         assert r.json()["hookSpecificOutput"]["permissionDecision"] == "deny"
     assert c.post("/hook/tok/Stop", content=b"not json").json() == {}  # other events: no decision, as before
+
+
+def test_typing_key_by_key_is_gated_only_when_it_submits():
+    b, reg, _ = make()
+    typed = dict(tool="mcp__browser__browser_press_sequentially", text="4111 1111")
+    assert _answer(b, reg, _click("Pay with card", **typed), None) == ({}, [])
+    out, qs = _answer(b, reg, _click("Pay with card", submit=True, **typed), "deny")
+    assert len(qs) == 1 and out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_accepting_a_site_dialog_always_asks_and_dismissing_it_never_does():
+    # confirm("Pay ₹1,999?") after a harmless-looking click: the dialog's text never reaches the hook
+    b, reg, _ = make()
+    dialog = dict(tool="mcp__browser__browser_handle_dialog")
+    assert _answer(b, reg, _click(None, accept=False, **dialog), None) == ({}, [])
+    out, qs = _answer(b, reg, _click(None, accept=True, **dialog), "deny")
+    assert len(qs) == 1 and out["hookSpecificOutput"]["permissionDecision"] == "deny"
