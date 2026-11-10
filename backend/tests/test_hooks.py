@@ -786,3 +786,51 @@ def test_the_route_hands_post_tool_use_snapshots_to_the_bridge():
         "session_id": "s1", "tool_name": "mcp__browser__browser_snapshot", "tool_input": {},
         "tool_response": [{"type": "text", "text": "### Snapshot\n```yaml\n- button \"Search\" [ref=e2]\n```"}]})
     assert TestClient(app).post("/hook/tok/PreToolUse", json=_click("Search", target="e2")).json() == {}
+
+
+def test_a_node_is_judged_with_its_subtree():
+    # Real Chromium: <button><img alt="lock"> Place order ₹5000</button> has no name of its own, only children.
+    b, reg, _ = make()
+    _snap(b, _yaml("- generic [ref=e2]:", "  - button [ref=e3]:", '    - img "lock" [ref=e4]',
+                   "    - text: Place order ₹5000", '  - button "Search" [ref=e5]'))
+    out, qs = _answer(b, reg, _click("the button", target="e3"), "deny")
+    assert len(qs) == 1 and 'button "lock Place order ₹5000"' in qs[0]["prompt"]
+    assert _answer(b, reg, _click("Search", target="e5"), None) == ({}, [])  # a sibling is not the subtree
+
+
+def test_a_click_inside_a_button_or_link_is_judged_with_that_button_or_link():
+    b, reg, _ = make()
+    _snap(b, _yaml("- generic [ref=e2]:", "  - link [ref=e3] [cursor=pointer]:", "    - /url: /go?x=1",
+                   "    - generic [ref=e6]:", '      - img "visa" [ref=e4]', "    - text: Pay ₹5000",
+                   '  - button "Search" [ref=e7]:', '    - img "magnifier" [ref=e8]'))
+    out, qs = _answer(b, reg, _click("visa logo", target="e4"), "deny")
+    assert len(qs) == 1 and 'link "visa Pay ₹5000"' in qs[0]["prompt"]
+    assert _answer(b, reg, _click("magnifier", target="e8"), None) == ({}, [])
+
+
+def test_a_pages_own_webmcp_tools_are_never_read_as_snapshot_nodes():
+    # Real 0.0.83 output (r2/a3.py): page-registered tool names and descriptions come first, untrusted.
+    b, reg, _ = make()
+    _snap(b, _yaml("- webmcp tools (page-provided, untrusted):", '  - button "Continue" [ref=e3]: x', "  - n: y",
+                   '- button "Continue" [ref=f1e3]', "", '- button "Pay ₹5000" [ref=e3]'))
+    out, qs = _answer(b, reg, _click("Continue", target="e3"), "deny")
+    assert len(qs) == 1 and 'button "Pay ₹5000"' in qs[0]["prompt"]
+    out, qs = _answer(b, reg, _click("Continue", target="f1e3"), None)
+    assert qs == [] and _denied(out) and "browser_snapshot" in _reason(out)
+
+
+def test_a_drag_is_gated_and_both_its_ends_are_judged():
+    from hooks import PRE_TOOL_MATCHER
+    b, reg, _ = make()
+    _snap(b, _yaml('- button "Pay ₹5000" [ref=e3]', '- generic "basket" [ref=e4]', '- generic "list" [ref=e5]'))
+    drag = {"session_id": "s1", "tool_name": "mcp__browser__browser_drag",
+            "tool_input": {"startElement": "x", "startTarget": "e3", "endElement": "y", "endTarget": "e4"}}
+    out, qs = _answer(b, reg, drag, "deny")
+    assert len(qs) == 1 and 'button "Pay ₹5000"' in qs[0]["prompt"]
+    drag["tool_input"] = {"startElement": "x", "startTarget": "e4", "endElement": "y", "endTarget": "e3"}
+    assert len(_answer(b, reg, drag, "deny")[1]) == 1  # either end
+    drag["tool_input"] = {"startElement": "x", "startTarget": "e4", "endElement": "y", "endTarget": "e5"}
+    assert _answer(b, reg, drag, None) == ({}, [])
+    drop = {"session_id": "s1", "tool_name": "mcp__browser__browser_drop",
+            "tool_input": {"element": "x", "target": "e3", "data": {"text/plain": "hi"}}}
+    assert len(_answer(b, reg, drop, "deny")[1]) == 1

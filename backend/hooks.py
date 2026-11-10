@@ -24,7 +24,7 @@ _EVENTS = ("PermissionRequest", "Stop", "SessionEnd", "SessionStart")
 # Playwright MCP writes it from outside the sandbox, over the page snapshots this guard reads if it likes.
 PRE_TOOL_MATCHER = "^mcp__browser__"
 _GATED = re.compile("^mcp__browser__browser_(click|fill_form|press_key|type|press_sequentially|keydown"
-                    "|select_option|handle_dialog)$")
+                    "|select_option|handle_dialog|drag|drop)$")
 # The tools whose response carries a page snapshot (Response.setIncludeSnapshot / setIncludeFullSnapshot in
 # Playwright MCP 0.0.83's coreBundle.js): only their "### Snapshot" link is the page's.
 _SNAPSHOTTING = {f"mcp__browser__browser_{t}" for t in (
@@ -50,6 +50,8 @@ _NODE = re.compile(r'^\s*- ([^\s":\[]+)(?: ("(?:[^"\\]|\\.)*"))?((?: \[[^\]\s]*\
 _QUOTED_KEY = re.compile(r"^(\s*- )'((?:[^']|'')*)'(:.*)?$")
 # A response's own snapshot section (Response.serialize): "### Snapshot", then the YAML in a ```yaml frame, or a
 # page-changing step's link to its file. The last one: page text (a dialog's message) comes in earlier sections.
+_WEBMCP = "- webmcp tools (page-provided, untrusted):"  # renderWebMCPToolsYaml's header
+_CONTAINERS = ("button", "link", "menuitem")  # a click inside one is a click on it
 _SNAPSHOT_HEAD = re.compile(r"^### Snapshot\n", re.M)
 _SNAPSHOT_LINK = re.compile(r"- \[Snapshot\]\((.+)\)$", re.M)
 
@@ -58,29 +60,84 @@ def _targets(inp):
     """What a browser step names as its element(s): `target` (0.0.83, which install.sh pins), or the older `ref`;
     its own and its form fields'."""
     items = [inp, *[f for f in inp.get("fields") or [] if isinstance(f, dict)]]
-    return [str(t) for i in items if (t := i.get("target") or i.get("ref"))]
+    ends = [inp.get(k) for k in ("startTarget", "endTarget", "startRef", "endRef")]  # browser_drag's two
+    return [str(t) for i in items if (t := i.get("target") or i.get("ref"))] + [str(t) for t in ends if t]
 
 
 def _refs(inp):
     return [t for t in _targets(inp) if _IS_REF.match(t)]
 
 
-def snapshot_node(snapshot, ref):
-    """(role, name, text) of the node whose own attributes hold [ref=<ref>], or None. A "[ref=...]" inside a
-    node's quoted name or its text is page content, never taken for the node's ref."""
-    want = f"ref={ref}"
-    for line in (snapshot or "").split("\n"):  # Playwright joins with \n only: never U+0085, U+2028...
-        if q := _QUOTED_KEY.match(line):
-            line = q.group(1) + q.group(2).replace("''", "'") + (q.group(3) or "")
-        if f"[{want}]" not in line or not (m := _NODE.match(line)):
+def _parse(line):
+    """(depth, role, name, attrs, text) of one snapshot line, or None."""
+    if q := _QUOTED_KEY.match(line):
+        line = q.group(1) + q.group(2).replace("''", "'") + (q.group(3) or "")
+    if not (m := _NODE.match(line)):
+        return None
+    return (len(line) - len(line.lstrip(" ")), m.group(1), _unquote(m.group(2)), m.group(3) or "",
+            _unquote((m.group(4) or "").strip()))
+
+
+def _unquote(v):
+    """A JSON-quoted name, or a value yamlEscapeValueIfNeeded double-quoted (its \\xNN is no JSON)."""
+    if not v or not v.startswith('"'):
+        return v or ""
+    try:
+        return str(json.loads(v))
+    except ValueError:
+        return v[1:-1]
+
+
+def _judged(lines, i):
+    """(role, name, text) of lines[i] with its subtree, every following line indented deeper: a nameless node is
+    named by its children's names and text ("button [ref=e3]:" over "- text: Place order"); /url and the like
+    (and a named node's children) go in its text. All of it is judged."""
+    depth, role, name, _, text = lines[i]
+    names, rest = [], [text] if text else []
+    for line in lines[i + 1:]:
+        if line is None:
             continue
-        if want in re.findall(r"\[([^\]]*)\]", m.group(3) or ""):
-            try:
-                name = json.loads(m.group(2)) if m.group(2) else ""
-            except ValueError:
-                name = m.group(2)[1:-1]
-            return m.group(1), str(name), (m.group(4) or "").strip()
+        if line[0] <= depth:
+            break
+        kid_role, kid_name, kid_text = line[1], line[2], line[4]
+        if kid_role.startswith("/"):  # a property: /url, /placeholder
+            rest.append(kid_text)
+        else:
+            names += [x for x in (kid_name, kid_text) if x]
+    if name:
+        return role, name, " ".join(rest + names)
+    return role, " ".join(names), " ".join(rest)
+
+
+def snapshot_nodes(snapshot, ref):
+    """The node whose own attributes hold [ref=<ref>], then its nearest enclosing button, link or menuitem if it
+    has one, each as (role, name, text) with its subtree; or None. A "[ref=...]" inside a node's quoted name or
+    its text is page content, never taken for the node's ref. A page's own WebMCP tools, listed first and
+    untrusted (a description can hold newlines), are never nodes: the snapshot proper follows the last blank line,
+    which the aria YAML itself never has. --no-webmcp (autonomy.py) leaves them out anyway."""
+    snapshot = snapshot or ""
+    if snapshot.startswith(_WEBMCP):
+        snapshot = snapshot.rsplit("\n\n", 1)[1] if "\n\n" in snapshot else ""
+    want = f"ref={ref}"
+    lines = [_parse(line) for line in snapshot.split("\n")]  # Playwright joins with \n only: never U+0085...
+    for i, line in enumerate(lines):
+        if line is None or want not in re.findall(r"\[([^\]]*)\]", line[3]):
+            continue
+        found, depth = [_judged(lines, i)], line[0]
+        for j in range(i - 1, -1, -1):  # up through its ancestors
+            if lines[j] is None or lines[j][0] >= depth:
+                continue
+            depth = lines[j][0]
+            if lines[j][1] in _CONTAINERS:
+                found.append(_judged(lines, j))
+                break
+        return found
     return None
+
+
+def snapshot_node(snapshot, ref):
+    """(role, name, text) of the node whose own attributes hold [ref=<ref>], with its subtree, or None."""
+    return (snapshot_nodes(snapshot, ref) or [None])[0]
 
 
 def _read_snapshot(path):
@@ -103,7 +160,7 @@ def _read_snapshot(path):
 def _real_name(node):
     """`button "Pay ₹5000"`: the role and accessible name (or its text), as said in the question."""
     role, name, text = node
-    return f'{role} "{name}"' if name else f"{role}: {text[:80]}" if text else role
+    return f'{role} "{name[:120]}"' if name else f"{role}: {text[:80]}" if text else role
 
 
 def hook_response(decision):
@@ -127,7 +184,8 @@ def _browser_target(inp):
     """What a browser step acts on, as its tool input names it. Never typed text or form values."""
     fields = [str(f.get("name")) for f in inp.get("fields") or [] if isinstance(f, dict) and f.get("name")]
     selectors = [t for t in _targets(inp) if not _IS_REF.match(t)]  # a selector is the agent's own words too
-    return " ".join(str(x) for x in (inp.get("element"), *fields, *selectors, inp.get("key")) if x)
+    words = (inp.get("element"), inp.get("startElement"), inp.get("endElement"), *fields, *selectors, inp.get("key"))
+    return " ".join(str(x) for x in words if x)
 
 
 def describe(tool_name, tool_input, page=None, real=None):
@@ -267,10 +325,11 @@ class HookBridge:
         dialog = tool == "mcp__browser__browser_handle_dialog"
         # `element` is written by the agent: judge the line the page itself has for each ref. A ref with none (no
         # snapshot kept, or not on it) can't be judged: refused, and the agent told how to let it be.
-        nodes = [snapshot_node(self._snapshots.get(sid), r) for r in _refs(inp)]
-        if None in nodes:
+        found = [snapshot_nodes(self._snapshots.get(sid), r) for r in _refs(inp)]
+        if None in found:
             logger.info(f"hook PreToolUse: a ref not on the page's snapshot, refused ({str(sid)[:8]})")
             return pre_tool_response(None, RESNAPSHOT)
+        nodes = [n for f in found for n in f]  # each ref's node, then the button or link it is inside
         if not (dialog or MONEY_WORDS.search(" ".join([_browser_target(inp), page or "",
                                                          *(" ".join(n) for n in nodes)]))):
             return {}
@@ -283,7 +342,9 @@ class HookBridge:
         # The real target's name, the page's own when the snapshot knows it, for relay: only a target that cancels
         # or stops lets "yes, cancel it" approve (confirm.names_a_cancellation). Never sent back to Claude.
         # No node: "" (no cancel question), never the agent's own `element`.
-        name = (nodes[0][1] or nodes[0][2]) if nodes else ""
+        # Inside a button or link: that one's name ("Cancel subscription", not its icon's).
+        target = found[0][-1] if found else None
+        name = (target[1] or target[2]) if target else ""
         return pre_tool_response(await self.ask(sid, "permission", describe(p.get("tool_name"), inp, page, real),
                                                 p.get("tool_name"), {**inp, "_target_name": name}))
 
