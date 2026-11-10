@@ -297,7 +297,10 @@ def make_bridge_tools(bridge, relay, registry, backend, names=()):
             return
         # A folder question (folders.py) also tells "just this once" from "always", from the user's words alone.
         # allow_folder's own question already asks for always: there a plain yes is always (folders.py).
-        verdict = (classify(reply, q["prompt"], names) if q["kind"] != "folder" else
+        # A browser step's question comes from the purchase guard: never a cancel/stop question, whatever its text
+        # says ("Pay & stop ads"), so "cancel" and "stop" there always mean no.
+        asked = "" if str(q.get("tool_name") or "").startswith("mcp__browser__") else q["prompt"]
+        verdict = (classify(reply, asked, names) if q["kind"] != "folder" else
                    standing_answer(reply, names) if q["tool_name"] == "allow_folder" else grant_answer(reply, names))
         if verdict == "unclear":
             relay.reask(question_id)  # a fresh marker, so only an answer to the new ask can count

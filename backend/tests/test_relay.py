@@ -115,10 +115,10 @@ def test_answer_yes_after_the_question_allows():
     assert out[-1]["status"] == "allowed" and fut.result() == "allow"
 
 
-def _answered(prompt, said, names=()):
+def _answered(prompt, said, names=(), tool="mcp__browser__browser_click"):
     async def go():
         reg, relay, task, ctx, bridge = setup("hi")
-        q = reg.add_question("s1", "permission", prompt, "mcp__browser__browser_click", {"ref": "e3"})
+        q = reg.add_question("s1", "permission", prompt, tool, {"target": "e3"})
         fut = asyncio.get_running_loop().create_future()
         bridge._waiters[q] = fut
         await relay.raise_question(q)
@@ -134,8 +134,12 @@ def _answered(prompt, said, names=()):
 
 def test_the_answer_is_judged_against_the_question_and_without_the_assistants_name():
     from confirm import name_words
-    assert _answered("browser_click: Cancel subscription (ref e3)", "yes, cancel it") == "allowed"
+    assert _answered("Bash: systemctl --user stop nightly-sync", "yes, stop it", tool="Bash") == "allowed"
     assert _answered("browser_click: Pay now (ref e3)", "yes, cancel it") == "denied"
+    # The purchase guard's questions (browser tools) are never cancel or stop questions, whatever their text.
+    assert _answered("browser_click: Pay & stop ads (ref e3)", "yes, stop") == "denied"
+    assert _answered("browser_click: Cancel subscription (ref e3)", "yes, cancel it") == "denied"
+    assert _answered("browser_click: Cancel subscription (ref e3)", "yes") == "allowed"
     assert _answered("browser_click: Pay now (ref e3)", "Nova, yes", name_words(["nova"])) == "allowed"
     assert _answered("browser_click: Pay now (ref e3)", "Nova no", name_words(["nova"])) == "denied"
 
