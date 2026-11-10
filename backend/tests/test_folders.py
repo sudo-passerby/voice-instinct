@@ -165,6 +165,36 @@ def test_always_covers_later_errands_and_survives_a_reload(w):
     assert len(asked) == 1
 
 
+def test_a_resumed_errand_keeps_an_always_grant(w):
+    out, _ = w.go(w.delegate, "plan the trip", "~/Documents/trip", access="write", reply="yes, always")
+    folder = (w.home / "Documents/trip").resolve()
+    _, asked = w.go(w.delegate, "add the hotel", errand=out[-1]["errand"])  # no directory: its grant, no question
+    assert asked == [] and w.grants[-1] == (folder, "write") and w.backend.calls[-1]["resume"] is True
+
+
+def test_a_resumed_errand_keeps_a_grant_a_standing_one_covered(w):
+    w.folders.allow((w.home / "Documents").resolve(), "read")
+    out, asked = w.go(w.delegate, "plan the trip", "~/Documents/trip")  # covered: no question
+    folder = (w.home / "Documents/trip").resolve()
+    assert asked == [] and w.grants[-1] == (folder, "read")
+    assert w.reg.get_grant(w.backend.calls[-1]["sid"]) == {"folder": str(folder), "access": "read"}
+    _, asked = w.go(w.delegate, "add the hotel", errand=out[-1]["errand"])
+    assert asked == [] and w.grants[-1] == (folder, "read")
+
+
+def test_a_resume_gets_the_higher_of_its_own_and_a_standing_grant(w):
+    out, _ = w.go(w.delegate, "plan the trip", "~/Documents/trip", reply="yes, just this once")  # once: read
+    w.folders.allow((w.home / "Documents").resolve(), "write")  # later, a standing write on the parent
+    _, asked = w.go(w.delegate, "fix the notes", errand=out[-1]["errand"])
+    assert asked == [] and w.grants[-1] == ((w.home / "Documents/trip").resolve(), "write")
+
+
+def test_a_resume_that_repeats_the_folder_keeps_its_higher_access(w):
+    out, _ = w.go(w.delegate, "tidy the notes", "~/Documents/trip", access="write", reply="yes")
+    _, asked = w.go(w.delegate, "and the rest", "~/Documents/trip", errand=out[-1]["errand"])  # access: read
+    assert asked == [] and w.grants[-1] == ((w.home / "Documents/trip").resolve(), "write")
+
+
 def test_a_hand_edit_to_the_file_counts_at_once(w):
     f = w.home / ".voice-instinct" / "folders.json"
     f.parent.mkdir(parents=True, exist_ok=True)

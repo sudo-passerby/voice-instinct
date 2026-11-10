@@ -161,7 +161,8 @@ class Registry:
         self.db.execute("UPDATE tasks SET status='aborted', finished_at=? WHERE status='running'", (now,))
 
     def set_grant(self, session_id, folder, access):
-        """A "once" folder grant (folders.py): this errand and its resumes only. One folder per errand."""
+        """The folder grant an errand ran under (folders.py: once, always or a covering standing grant), for its
+        resumes. One folder per errand."""
         self.db.execute("INSERT INTO grants(session_id, folder, access, at) VALUES(?,?,?,?) ON CONFLICT(session_id) "
                         "DO UPDATE SET folder=excluded.folder, access=excluded.access, at=excluded.at",
                         (session_id, str(folder), access, self.clock()))

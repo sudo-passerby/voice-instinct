@@ -51,8 +51,8 @@ def make_tools(backend, registry, settings_for, on_finish=None, workspace_root=N
         mine = held["access"] if held and folder.is_relative_to(held["folder"]) else None
         have = max((a for a in (mine, folders.access(folder) if access in STORED else None) if a),
                    key=LEVELS.get, default=None)
-        if covers(have, access):
-            return (folder, access), None
+        if covers(have, access):  # a resume repeating its folder keeps the higher access it already holds
+            return (folder, max(access, mine, key=LEVELS.get) if mine else access), None
         if access == "delete" and not _asked_to_delete(params):
             return None, "I only delete files when you ask me to delete something."
         if bridge is None:
@@ -69,8 +69,7 @@ def make_tools(backend, registry, settings_for, on_finish=None, workspace_root=N
             return None, f"You didn't allow me to use {tilde(folder, home)}, so I didn't start the errand."
         if answer == "always" and access in STORED:
             folders.allow(folder, access)  # every later errand, without asking
-        else:  # delete is never standing: an "always" counts as once
-            registry.set_grant(sid, folder, access)
+        # delete is never standing: an "always" counts as once. Every grant goes in the registry (below).
         return (folder, access), None
 
     # Async call (Pipecat: Function Calling > Per-Tool Options): barge-in must not cancel it, and the
@@ -119,7 +118,8 @@ def make_tools(backend, registry, settings_for, on_finish=None, workspace_root=N
                 held = registry.get_grant(sid)
                 folder = resolve_folder(directory, home) if directory and directory.strip() else None
                 if folder is None and held:  # a resumed errand keeps its grant (asking only to go higher)
-                    folder, access = Path(held["folder"]), max(access, held["access"], key=LEVELS.get)
+                    folder = Path(held["folder"])  # and gets a standing grant made since, if that is higher
+                    access = max((a for a in (access, held["access"], folders.access(folder)) if a), key=LEVELS.get)
                 if folder is None and not wd.is_relative_to(workspace_root.resolve()):
                     folder = wd  # an errand from before grants ran in the user's folder: it needs one now
                 if folder is not None and folder.is_relative_to(workspace_root.resolve()):
@@ -138,6 +138,8 @@ def make_tools(backend, registry, settings_for, on_finish=None, workspace_root=N
                                                   "instruction": "Tell the user in one short sentence."})
                     return
             registry.upsert_session(sid, origin="delegated", mode="headless", state="running", cwd=str(wd))
+            if grant:  # once, always or covered by a standing grant: its resumes keep it (folders.py)
+                registry.set_grant(sid, *grant)
             task_id = registry.create_task(sid, task)
             logger.info(f"task {task_id} started (session {sid[:8]})")
             # Intermediate result (documented: is_final=False). run_llm=True on it is not in the docs
