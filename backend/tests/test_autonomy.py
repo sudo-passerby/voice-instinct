@@ -77,6 +77,8 @@ def test_the_browsers_code_running_tools_are_denied_in_every_mode():
     # an agent reading untrusted pages must never get it. Deny rules hold in every permission mode.
     deny = sandbox_settings(HOME, APP, DATA)["permissions"]["deny"]
     assert "mcp__browser__browser_run_code_unsafe" in deny and "mcp__browser__browser_file_upload" in deny
+    # browser_evaluate runs model-written JS in the page: it could click "Pay" past the purchase guard (hooks.py).
+    assert "mcp__browser__browser_evaluate" in deny
 
 
 def test_the_shell_cannot_reach_any_host_beyond_the_hook_port():

@@ -35,8 +35,10 @@ _RUNS_LATER_GLOBS = ("**/.claude/**", "**/CLAUDE*.md")
 # scheme). Not a boundary on its own (its docs: redirects pass); guard.py is.
 BLOCKED_ORIGINS = ";".join(("http://localhost:*", "http://localhost", "http://127.0.0.1:*", "http://127.0.0.1",
                             "[::1]:*", "[::1]"))
-# The errand browser's tools that run code outside the sandbox or read local files into a page.
-_BROWSER_DENY = ("mcp__browser__browser_run_code_unsafe", "mcp__browser__browser_file_upload")
+# The errand browser's tools that run code outside the sandbox or read local files into a page, and
+# browser_evaluate: page JS could click "Pay" without the purchase guard (hooks.PRE_TOOL_MATCHER) seeing it.
+_BROWSER_DENY = ("mcp__browser__browser_run_code_unsafe", "mcp__browser__browser_file_upload",
+                 "mcp__browser__browser_evaluate")
 
 
 def _fs(p: Path, home: Path) -> str:

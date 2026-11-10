@@ -272,7 +272,7 @@ def _answer(b, reg, payload, decision):
 
 @pytest.mark.parametrize("element", ["Pay now", "Make payment", "Buy now", "Purchase", "Place order", "Checkout",
                                      "Check out", "Subscribe", "Start subscription", "Confirm booking", "Book now",
-                                     "Reserve a table"])
+                                     "Reserve a table", "Confirm", "Donate", "Bid", "Place bid"])
 def test_a_purchase_like_click_always_asks_the_user_first(element):
     # Auto mode's classifier approves clicks on its own; anything that may spend money goes to the user.
     b, reg, relay = make()
@@ -291,7 +291,7 @@ def test_a_no_or_no_answer_blocks_the_purchase():
 
 def test_an_ordinary_click_is_left_to_claude_code():
     b, reg, relay = make()
-    for el in ("Search", "Next page", "Sort by price", "Facebook", "Bookmarks"):
+    for el in ("Search", "Next page", "Sort by price", "Facebook", "Bookmarks", "Add to cart", "Reorder"):
         out, qs = _answer(b, reg, _click(el), None)
         assert out == {} and qs == [], el
     assert relay.raised == []
@@ -323,7 +323,8 @@ def test_every_run_gates_purchase_steps_through_the_pre_tool_hook(tmp_path):
     hooks = json.loads(Path(write_run_settings(tmp_path, "a", "tok", 7860, hook_timeout=100)).read_text())["hooks"]
     (entry,) = hooks["PreToolUse"]
     assert entry["hooks"][0]["url"].endswith("/hook/tok/PreToolUse") and entry["hooks"][0]["timeout"] == 100
-    for tool in ("mcp__browser__browser_click", "mcp__browser__browser_fill_form", "mcp__browser__browser_press_key"):
+    for tool in ("mcp__browser__browser_click", "mcp__browser__browser_fill_form", "mcp__browser__browser_press_key",
+                 "mcp__browser__browser_type", "mcp__browser__browser_keydown", "mcp__browser__browser_select_option"):
         assert re.search(entry["matcher"], tool), tool  # Claude Code tests it as a JS regex
     assert not re.search(PRE_TOOL_MATCHER, "mcp__browser__browser_clickx")
 
@@ -333,3 +334,39 @@ def test_the_route_hands_pre_tool_use_to_the_bridge():
     app = FastAPI()
     app.include_router(make_router(b, "tok"))
     assert TestClient(app).post("/hook/tok/PreToolUse", json=_click("Search")).json() == {}
+
+
+def test_typing_is_gated_only_when_it_submits():
+    b, reg, _ = make()
+    typed = dict(tool="mcp__browser__browser_type", text="4111 1111")
+    out, qs = _answer(b, reg, _click("Pay with card", **typed), None)  # no submit: just text in a box
+    assert out == {} and qs == []
+    out, qs = _answer(b, reg, _click("Pay with card", submit=True, **typed), "allow")
+    assert len(qs) == 1 and "4111" not in qs[0]["prompt"]  # never the typed text
+    assert out["hookSpecificOutput"]["permissionDecision"] == "allow"
+
+
+@pytest.mark.parametrize("tool,inp", [("mcp__browser__browser_keydown", {"key": "Enter"}),
+                                      ("mcp__browser__browser_select_option", {"values": ["Monthly"]})])
+def test_key_downs_and_dropdowns_on_a_checkout_page_are_gated(tool, inp):
+    b, reg, _ = make()
+    b.note_page({"session_id": "s1", "tool_name": "mcp__browser__browser_click",
+                 "tool_response": "- Page URL: https://shop.example/checkout"})
+    out, qs = _answer(b, reg, _click(None, tool=tool, **inp), "deny")
+    assert len(qs) == 1 and out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_a_broken_pre_tool_hook_denies_rather_than_lets_it_through():
+    b, reg, _ = make()
+
+    async def boom(p):
+        raise RuntimeError("bridge bug")
+
+    b.on_pre_tool_use = boom
+    app = FastAPI()
+    app.include_router(make_router(b, "tok"))
+    c = TestClient(app)
+    for r in (c.post("/hook/tok/PreToolUse", json=_click("Pay now")),
+              c.post("/hook/tok/PreToolUse", content=b"not json", headers={"content-type": "application/json"})):
+        assert r.json()["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert c.post("/hook/tok/Stop", content=b"not json").json() == {}  # other events: no decision, as before

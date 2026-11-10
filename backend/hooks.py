@@ -16,9 +16,11 @@ from debugbrowser import page_url
 _EVENTS = ("PermissionRequest", "Stop", "SessionEnd", "SessionStart")
 # A browser step that may spend money or commit the user always goes to the user first (PreToolUse), whatever
 # auto mode's classifier would say: matched on the element's text, the form's field names and the page's URL.
-PRE_TOOL_MATCHER = "^mcp__browser__browser_(click|fill_form|press_key)$"
+# browser_type only when it submits (presses Enter after); browser_evaluate is denied outright (autonomy.py).
+PRE_TOOL_MATCHER = "^mcp__browser__browser_(click|fill_form|press_key|type|keydown|select_option)$"
+# Whole words: "add to cart" and "reorder" stay unmatched.
 MONEY_WORDS = re.compile(r"\b(pay|payment|buy|purchase|order|checkout|check out|subscribe|subscription"
-                         r"|confirm booking|book now|reserve)\b", re.I)
+                         r"|confirm|confirm booking|book now|reserve|donate|bid|place bid)\b", re.I)
 # Debug mode's step hook (steps.py): every tool the agent uses. steps.SCREENSHOT_TOOLS picks the ones
 # that change the page and get a screenshot.
 STEP_MATCHER = "*"
@@ -98,6 +100,8 @@ class HookBridge:
         """A click, form fill or key press that may pay, buy, order or book asks the user first. Otherwise no
         decision: Claude Code goes on as usual."""
         sid, inp = p.get("session_id"), p.get("tool_input") if isinstance(p.get("tool_input"), dict) else {}
+        if p.get("tool_name") == "mcp__browser__browser_type" and not inp.get("submit"):
+            return {}  # text in a box commits nothing; submitting it is a key press
         page = self._pages.get(sid)
         if not sid or not MONEY_WORDS.search(f"{_browser_target(inp)} {page or ''}"):
             return {}
@@ -157,10 +161,12 @@ def make_router(bridge, token, steps=None, budget=None):
     async def hook(tok: str, event: str, request: Request):
         if not hmac.compare_digest(tok.encode(), token.encode()):  # str form raises on non-ASCII
             raise HTTPException(status_code=404)
+        # The purchase guard fails closed: a step it could not judge is denied, never let through.
+        failed = pre_tool_response(None) if event == "PreToolUse" else {}
         try:
             payload = await request.json()
         except Exception:
-            return {}
+            return failed
         try:
             if event == "PreToolUse":
                 return await bridge.on_pre_tool_use(payload)
@@ -174,7 +180,7 @@ def make_router(bridge, token, steps=None, budget=None):
             return await bridge.on_event(event, payload)
         except Exception as e:  # never let a bridge bug break the user's Claude session
             logger.error(f"hook {event} failed: {e!r}")
-            return {}
+            return failed
 
     return router
 
