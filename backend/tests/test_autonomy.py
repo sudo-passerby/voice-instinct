@@ -130,9 +130,9 @@ def _install_browser(home):
 
 def test_browser_mcp_attaches_to_a_given_cdp_endpoint_instead_of_launching(tmp_path):
     cli = _install_browser(tmp_path)
-    assert browser_mcp(tmp_path)["mcpServers"]["browser"]["args"] == [
+    assert browser_mcp(tmp_path)["mcpServers"]["browser"]["args"][:5] == [
         str(cli), "--browser", "chromium", "--headless", "--isolated"]
-    assert browser_mcp(tmp_path, cdp_endpoint="http://127.0.0.1:9")["mcpServers"]["browser"]["args"] == [
+    assert browser_mcp(tmp_path, cdp_endpoint="http://127.0.0.1:9")["mcpServers"]["browser"]["args"][:3] == [
         str(cli), "--cdp-endpoint", "http://127.0.0.1:9"]
 
 
@@ -175,3 +175,13 @@ def test_the_nightly_run_cannot_plant_code_that_runs_outside_its_sandbox():
     for p in ("**/.git/**", "**/.claude/**", "**/CLAUDE.md", "**/CLAUDE.local.md", ".gitignore", "notes.md",
               ".consolidated", "journal/**"):
         assert f"Edit(~/.voice-instinct/memory/{p})" in rules, p
+
+
+def test_the_errand_browser_may_not_request_this_app_or_any_local_page(tmp_path):
+    # A page the agent visits must not reach the voice server; guard.py refuses it, this stops it earlier.
+    _install_browser(tmp_path)
+    for cdp in (None, "http://127.0.0.1:9"):  # debug runs too
+        args = browser_mcp(tmp_path, cdp_endpoint=cdp)["mcpServers"]["browser"]["args"]
+        blocked = args[args.index("--blocked-origins") + 1].split(";")
+        assert {"http://localhost:*", "http://localhost", "http://127.0.0.1:*", "http://127.0.0.1",
+                "[::1]:*", "[::1]"} <= set(blocked)

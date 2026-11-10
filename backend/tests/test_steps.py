@@ -131,7 +131,7 @@ def test_a_step_is_screenshotted_recorded_and_sent(tmp_path):
 
     async def go():
         mcp = json.loads(await hub.start("s1", tmp_path))
-        assert mcp["mcpServers"]["browser"]["args"][1:] == ["--cdp-endpoint", "http://127.0.0.1:9"]
+        assert mcp["mcpServers"]["browser"]["args"][1:3] == ["--cdp-endpoint", "http://127.0.0.1:9"]
         assert await hub.on_step(_step()) == {}
         await _drain(hub)
         return hub._runs["s1"].rec

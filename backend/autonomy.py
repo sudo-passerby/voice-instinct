@@ -13,6 +13,12 @@ _SECRET_DIRS = (".ssh", ".aws", ".gnupg", ".config/gh", ".config/gcloud", ".kube
                 ".claude")  # Claude's login and the user's own session transcripts (the CLI reads them itself)
 _SECRET_FILES = (".netrc", ".git-credentials", ".npmrc", ".pypirc",
                  ".claude.json")  # other MCP servers' secrets
+# Pages the errand browser may never request: this app's own server and anything else local. Playwright MCP
+# 0.0.83's format (originOrHostGlob in playwright-core): "http://host:*" covers every explicit port but not
+# the default one, so that is listed too; "http://[::1]:*" is not understood, the bare-host forms are (any
+# scheme). Not a boundary on its own (its docs: redirects pass); guard.py is.
+BLOCKED_ORIGINS = ";".join(("http://localhost:*", "http://localhost", "http://127.0.0.1:*", "http://127.0.0.1",
+                            "[::1]:*", "[::1]"))
 # The errand browser's tools that run code outside the sandbox or read local files into a page.
 _BROWSER_DENY = ("mcp__browser__browser_run_code_unsafe", "mcp__browser__browser_file_upload")
 
@@ -96,7 +102,7 @@ def browser_mcp(home, cdp_endpoint=None):
     if not (node.exists() and cli.exists() and browsers.is_dir()):
         return None
     args = (["--cdp-endpoint", cdp_endpoint] if cdp_endpoint
-            else ["--browser", "chromium", "--headless", "--isolated"])
+            else ["--browser", "chromium", "--headless", "--isolated"]) + ["--blocked-origins", BLOCKED_ORIGINS]
     return {"mcpServers": {"browser": {"type": "stdio", "command": str(node), "args": [str(cli), *args],
                                        "env": {"PLAYWRIGHT_BROWSERS_PATH": str(browsers)}}}}
 
