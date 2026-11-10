@@ -153,11 +153,12 @@ class Registry:
             (self.clock(),)).rowcount
 
     def close_unfinished(self):
-        """At startup: no run survives a restart, so a session still open has ended and a running task was
-        aborted. The session can still be resumed."""
+        """At startup: no run of ours survives a restart, so a session of ours that was running or waiting on a
+        question has ended, and a running task was aborted. The session can still be resumed. An idle one is left
+        as it is, and so is an external session (the user's own Claude Code, which our restart does not end)."""
         now = self.clock()
-        self.db.execute("UPDATE sessions SET state='ended', ended_at=?, end_reason='restart' WHERE state!='ended'",
-                        (now,))
+        self.db.execute("UPDATE sessions SET state='ended', ended_at=?, end_reason='restart' "
+                        "WHERE state IN ('running', 'waiting_input') AND origin != 'external'", (now,))
         self.db.execute("UPDATE tasks SET status='aborted', finished_at=? WHERE status='running'", (now,))
 
     def set_grant(self, session_id, folder, access):
