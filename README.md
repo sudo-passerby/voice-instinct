@@ -99,7 +99,7 @@ Errands can neither read nor change that file.
   and the task (Gemini and Claude are cloud services); use Ollama for a local front model.
 - Say "bye" or "stop" to send it away; running errands carry on.
 - Errands can read your memory but never change it, and never see the raw journal of your conversations.
-  The nightly memory run has no network and no web tools. It learns from what you and Nova said, Nova's
+  The nightly memory run has no network, no web tools and no shell. It learns from what you and Nova said, Nova's
   spoken summaries of errand results included, never the raw text of what a web page said. A day's journal
   is deleted once the nightly run has filed it and it is over 7 days old (one a failed run could not file is
   kept until a run does); `./install.sh --uninstall --purge` deletes all memory.
