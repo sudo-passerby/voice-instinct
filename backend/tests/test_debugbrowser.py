@@ -114,3 +114,17 @@ def test_the_real_browser_starts_empty_screenshots_and_is_removed():
     b, png = asyncio.run(go())
     assert png.startswith(b"\x89PNG\r\n\x1a\n")
     assert not Path(b.profile).exists()  # the fresh profile is gone with the browser
+
+
+def test_the_debug_browser_refuses_payment_gateways_too(tmp_path):
+    # It is launched by us (Playwright MCP's own launch options never reach it): the same resolver rules.
+    from autonomy import resolver_rules
+    seen = tmp_path / "args"
+    fake = tmp_path / "chrome"
+    fake.write_text(f'#!/bin/sh\nfor a in "$@"; do echo "$a"; done > {seen}\nexit 1\n')
+    fake.chmod(0o755)
+    with pytest.raises(RuntimeError):
+        asyncio.run(launch(fake, timeout=2))
+    args = seen.read_text().splitlines()
+    assert f"--host-resolver-rules={resolver_rules()}" in args
+    assert any(a.startswith("--user-data-dir=") and "vi-browser-" in a for a in args)  # a fresh temp profile

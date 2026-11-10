@@ -5,6 +5,7 @@ network except approved domains. File tools, WebFetch and MCP run outside it, so
 locations are also denied through permission rules. Deny rules hold in every permission mode.
 """
 
+import json
 from pathlib import Path
 
 _SECRET_DIRS = (".ssh", ".aws", ".gnupg", ".config/gh", ".config/gcloud", ".kube", ".docker",
@@ -32,11 +33,31 @@ _DATA_CODE = ("node", "browser", "models", "qwen-asr")
 # Git hooks and direnv's .envrc run code later too (the next git command, the next cd), granted folders included.
 _RUNS_LATER_GLOBS = ("**/.claude/**", "**/CLAUDE*.md", "**/.git/hooks/**", "**/.envrc")
 # Pages the errand browser may never request: this app's own server and anything else local. Playwright MCP
+# Nova never pays: the payment gateways and hosted checkouts the errand browser may never reach. "*.x" is every
+# subdomain (originOrHostGlob makes a bare host "*://host/**", and globToRegexPattern's "*" spans dots), so the
+# bare domain is listed too. Only payment hosts: never all of google.com or amazon.in. A merchant's own in-house
+# payment page is not covered: the errand stops at checkout and the purchase guard asks (hooks.py).
+PAYMENT_HOSTS = tuple(h for d in (
+    "razorpay.com", "rzp.io", "payu.in", "payu.com", "payumoney.com", "ccavenue.com", "billdesk.com", "juspay.in",
+    "cashfree.com", "phonepe.com", "easebuzz.in", "instamojo.com", "stripe.com", "stripe.network", "paypal.com",
+    "paypalobjects.com", "adyen.com", "adyenpayments.com", "braintreegateway.com", "braintree-api.com",
+    "checkout.com", "worldpay.com", "paytmpayments.com", "payments-amazon.com", "amazonpay.in")
+    for h in (d, f"*.{d}")) + (
+    "securegw.paytm.in", "securegw-stage.paytm.in", "pguat.paytm.com", "pg.paytm.in",  # paytm's gateway, not paytm.com
+    "pay.google.com", "payments.google.com",  # Google Pay, not google.com
+    "pay.amazon.com", "pay.amazon.in", "payments.amazon.com", "payments.amazon.in")  # Amazon Pay, not the shop
 # 0.0.83's format (originOrHostGlob in playwright-core): "http://host:*" covers every explicit port but not
 # the default one, so that is listed too; "http://[::1]:*" is not understood, the bare-host forms are (any
-# scheme). Not a boundary on its own (its docs: redirects pass); guard.py is.
+# scheme). Not a boundary on its own (its docs: redirects pass); guard.py is, and for the gateways the browser's
+# own resolver (resolver_rules).
 BLOCKED_ORIGINS = ";".join(("http://localhost:*", "http://localhost", "http://127.0.0.1:*", "http://127.0.0.1",
-                            "[::1]:*", "[::1]"))
+                            "[::1]:*", "[::1]", *PAYMENT_HOSTS))
+
+
+def resolver_rules():
+    """Chromium's --host-resolver-rules: every payment host fails to resolve, so no redirect, frame, fetch or
+    service worker reaches it either (--blocked-origins misses redirects)."""
+    return ", ".join(f"MAP {h} ~NOTFOUND" for h in PAYMENT_HOSTS)
 # The errand browser's tools that run code outside the sandbox or read local files into a page, and
 # browser_evaluate: page JS could click "Pay" without the purchase guard (hooks.PRE_TOOL_MATCHER) seeing it.
 _BROWSER_DENY = ("mcp__browser__browser_run_code_unsafe", "mcp__browser__browser_file_upload",
@@ -178,8 +199,18 @@ def browser_mcp(home, cdp_endpoint=None):
     browsers = vi / "browser/browsers"
     if not (node.exists() and cli.exists() and browsers.is_dir()):
         return None
-    args = (["--cdp-endpoint", cdp_endpoint] if cdp_endpoint
-            else ["--browser", "chromium", "--headless", "--isolated"]) + ["--blocked-origins", BLOCKED_ORIGINS]
+    if cdp_endpoint:  # our own Chromium (debugbrowser.py), which gets the resolver rules at launch
+        args = ["--cdp-endpoint", cdp_endpoint]
+    else:  # Playwright's own launch: the rules go in its config file, under browser/ (never writable by an errand)
+        config = vi / "browser/errand-config.json"
+        try:
+            config.write_text(json.dumps({"browser": {"launchOptions": {"args": [
+                f"--host-resolver-rules={resolver_rules()}"]}}}))
+        except OSError:
+            return None  # never a browser that could reach a payment gateway
+        args = ["--browser", "chromium", "--headless", "--isolated", "--config", str(config)]
+    # --no-webmcp: a page's own WebMCP tools are untrusted text in every snapshot.
+    args += ["--blocked-origins", BLOCKED_ORIGINS, "--no-webmcp"]
     return {"mcpServers": {"browser": {"type": "stdio", "command": str(node), "args": [str(cli), *args],
                                        "env": {"PLAYWRIGHT_BROWSERS_PATH": str(browsers)}}}}
 
