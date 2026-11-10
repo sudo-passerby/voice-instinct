@@ -256,6 +256,10 @@ async def bot(runner_args: RunnerArguments):
         wake.assistant_turn_done()  # the user can reply without the phrase, unless they said stop
         save_conversation(registry, context)
 
+    @llm.event_handler("on_function_calls_started")  # documented LLM service event
+    async def on_function_calls_started(service, function_calls):
+        relay.tool_called()  # a note's turn that is only a tool call still counts as said
+
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
         await start_session(relay, worker, context, lambda: wake.wake("question"))  # no greeting

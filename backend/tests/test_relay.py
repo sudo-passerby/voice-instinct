@@ -637,6 +637,24 @@ def test_a_note_reports_when_it_is_spoken_and_when_it_is_dropped():
     assert run(go()) == ["spoken1", "dropped2"]
 
 
+def test_a_note_whose_turn_is_only_a_tool_call_counts_as_said():
+    # The model may answer a reminder with a tool call and no words (bot.py: Pipecat's on_function_calls_started);
+    # dropping it would say the reminder again.
+    async def go():
+        relay = Relay(Registry())
+        await relay.attach_and_pump(FakeTask(), FakeContext())
+        events = []
+        relay.say("tea", on_spoken=lambda: events.append("spoken"), on_dropped=lambda: events.append("dropped"))
+        await asyncio.sleep(0.01)
+        relay.bot_turn(True)
+        relay.tool_called()
+        relay.bot_turn(False, spoken=False)  # empty content
+        relay.tool_called()  # no note in flight: nothing happens
+        return events
+
+    assert run(go()) == ["spoken"]
+
+
 def test_it_holds_nova_awake_while_it_speaks_or_waits_for_an_answer():
     # A long reply outlasted the 10 s awake window: Nova fell asleep mid-answer, missed the follow-up,
     # and the orb, re-shown by each sentence, never hid again (2026-10-16).
