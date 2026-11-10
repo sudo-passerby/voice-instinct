@@ -10,9 +10,25 @@ from pathlib import Path
 _SECRET_DIRS = (".ssh", ".aws", ".gnupg", ".config/gh", ".config/gcloud", ".kube", ".docker",
                 ".mozilla", ".config/chromium", ".config/google-chrome", ".password-store",
                 ".local/share/keyrings",  # logged-in browsers and keyrings
+                ".config/BraveSoftware", ".config/vivaldi", ".config/microsoft-edge", ".config/opera",
+                ".thunderbird", ".config/rclone", ".local/share/TelegramDesktop", ".var/app",  # flatpak apps' data
+                ".config/Signal", ".config/discord", ".config/Slack",  # signed-in mail, chat and cloud drives
                 ".claude")  # Claude's login and the user's own session transcripts (the CLI reads them itself)
 _SECRET_FILES = (".netrc", ".git-credentials", ".npmrc", ".pypirc",
+                 ".zsh_history", ".bash_history", ".python_history", ".local/share/fish/fish_history",
                  ".claude.json")  # other MCP servers' secrets
+# Other projects' secrets, at any depth under home (gitignore-style ** in rules; on Linux the sandbox honours
+# a wildcard after the first directory name, which ~/ always has).
+_SECRET_GLOBS = ("**/.env", "**/.env.*")
+# Code and settings that run outside the sandbox later (login, a shell, autostart, the next Claude session):
+# readable, never writable. Plus, under data_dir, the programs install.sh put there.
+_RUNS_LATER_DIRS = (".config/autostart", ".config/systemd", ".local/bin")
+_RUNS_LATER_FILES = (".bashrc", ".zshrc", ".profile", ".bash_profile", ".zprofile")
+_DATA_CODE = ("node", "browser", "models", "qwen-asr")
+# Any Claude settings or instructions under home, at any depth (Claude Code loads them; see consolidation_settings).
+# Edit rules only: Linux's sandbox ignores these wildcards in denyWrite, but the sandbox protects .claude
+# settings in the working directory itself.
+_RUNS_LATER_GLOBS = ("**/.claude/**", "**/CLAUDE*.md")
 # Pages the errand browser may never request: this app's own server and anything else local. Playwright MCP
 # 0.0.83's format (originOrHostGlob in playwright-core): "http://host:*" covers every explicit port but not
 # the default one, so that is listed too; "http://[::1]:*" is not understood, the bare-host forms are (any
@@ -51,13 +67,21 @@ def sandbox_settings(home, app_dir, data_dir, hook_port=7860, errand=True) -> di
         deny += [f"Read({_rule(p, home)}/**)", f"Edit({_rule(p, home)}/**)"]
     for p in files:
         deny += [f"Read({_rule(p, home)})", f"Edit({_rule(p, home)})"]
+    deny += [f"{t}(~/{g})" for g in _SECRET_GLOBS for t in ("Read", "Edit")]
+    # Not writable: code that runs outside the sandbox later.
+    no_write_dirs = [app_dir] + [data_dir / d for d in _DATA_CODE] + [home / d for d in _RUNS_LATER_DIRS]
+    no_write_files = [home / f for f in _RUNS_LATER_FILES]
+    deny += [f"Edit({_rule(p, home)}/**)" for p in no_write_dirs] + [f"Edit({_rule(p, home)})" for p in no_write_files]
+    deny += [f"Edit(~/{g})" for g in _RUNS_LATER_GLOBS]
     return {
         "sandbox": {
             "enabled": True,
             "failIfUnavailable": True,  # never fall back to running unsandboxed
             "autoAllowBashIfSandboxed": True,  # sandboxed shell commands need no prompt
             "allowUnsandboxedCommands": False,  # and cannot be retried outside the sandbox
-            "filesystem": {"denyRead": [_fs(p, home) for p in dirs + files]},
+            "filesystem": {"denyRead": [_fs(p, home) for p in dirs + files] + [f"~/{g}" for g in _SECRET_GLOBS],
+                           # Edit denies are merged in too; listed for Bash all the same (plain paths: Linux)
+                           "denyWrite": [_fs(p, home) for p in no_write_dirs + no_write_files]},
             # The sandbox proxy refuses loopback unless listed, so without this every hook POST to this
             # app got HTTP 403 and permission questions never reached the user.
             # strictAllowlist: in auto mode a command may otherwise name more hosts for the classifier.

@@ -185,3 +185,48 @@ def test_the_errand_browser_may_not_request_this_app_or_any_local_page(tmp_path)
         blocked = args[args.index("--blocked-origins") + 1].split(";")
         assert {"http://localhost:*", "http://localhost", "http://127.0.0.1:*", "http://127.0.0.1",
                 "[::1]:*", "[::1]"} <= set(blocked)
+
+
+def test_more_signed_in_apps_and_shell_histories_are_off_limits():
+    s = sandbox_settings(HOME, APP, DATA)
+    deny_read, rules = s["sandbox"]["filesystem"]["denyRead"], s["permissions"]["deny"]
+    for d in (".config/BraveSoftware", ".config/vivaldi", ".config/microsoft-edge", ".config/opera", ".thunderbird",
+              ".config/rclone", ".local/share/TelegramDesktop", ".var/app", ".config/Signal", ".config/discord",
+              ".config/Slack"):
+        assert f"~/{d}" in deny_read and f"Read(~/{d}/**)" in rules and f"Edit(~/{d}/**)" in rules, d
+    for f in (".zsh_history", ".bash_history", ".python_history", ".local/share/fish/fish_history"):
+        assert f"~/{f}" in deny_read and f"Read(~/{f})" in rules, f
+
+
+def test_other_projects_env_files_are_unreadable_at_any_depth():
+    # Rule paths are gitignore-style (docs: Permissions > Read and Edit): ~/**/.env covers every project.
+    s = sandbox_settings(HOME, APP, DATA)
+    assert {"Read(~/**/.env)", "Read(~/**/.env.*)", "Edit(~/**/.env)"} <= set(s["permissions"]["deny"])
+    assert "~/**/.env" in s["sandbox"]["filesystem"]["denyRead"]
+
+
+def test_code_that_runs_outside_the_sandbox_later_cannot_be_changed():
+    # This app's own code, the installer's programs, autostart and systemd units, ~/.local/bin, shell
+    # startup files, and any Claude settings or instructions: changing one would run code unsandboxed later.
+    s = sandbox_settings(HOME, APP, DATA)
+    rules, deny_write = s["permissions"]["deny"], s["sandbox"]["filesystem"]["denyWrite"]
+    for d in ("~/voice-agent", "~/.voice-instinct/node", "~/.voice-instinct/browser", "~/.voice-instinct/models",
+              "~/.voice-instinct/qwen-asr", "~/.config/autostart", "~/.config/systemd", "~/.local/bin"):
+        assert f"Edit({d}/**)" in rules and d in deny_write, d
+        assert f"Read({d}/**)" not in rules  # still readable
+    for f in ("~/.bashrc", "~/.zshrc", "~/.profile", "~/.bash_profile", "~/.zprofile"):
+        assert f"Edit({f})" in rules and f in deny_write, f
+    assert "Edit(~/**/.claude/**)" in rules and "Edit(~/**/CLAUDE*.md)" in rules
+    # Linux's sandbox ignores wildcards in denyWrite other than a trailing /**: only plain paths go there.
+    assert not any("*" in p for p in deny_write)
+
+
+def test_the_repo_outside_home_is_protected_with_an_absolute_rule():
+    s = sandbox_settings(Path("/home/u"), Path("/opt/app"), Path("/var/vi"))
+    assert "Edit(//opt/app/**)" in s["permissions"]["deny"] and "/opt/app" in s["sandbox"]["filesystem"]["denyWrite"]
+
+
+def test_the_nightly_run_gets_the_same_protections():
+    from autonomy import consolidation_settings
+    rules = consolidation_settings(HOME, APP, DATA)["permissions"]["deny"]
+    assert "Edit(~/voice-agent/**)" in rules and "Read(~/**/.env)" in rules and "Edit(~/.bashrc)" in rules
