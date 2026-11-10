@@ -17,6 +17,14 @@ def client(monkeypatch, playground=False):
     async def offer():
         return {"ok": True}
 
+    @app.post("/hook/{tok}/{event}")
+    async def hook(tok: str, event: str):
+        return {}
+
+    @app.get("/gui-config")
+    async def gui_config():
+        return {}
+
     @app.websocket("/ws")
     async def ws(socket: WebSocket):
         await socket.accept()
@@ -43,10 +51,27 @@ def test_localhost_origins_are_refused_unless_the_playground_is_switched_on(monk
     assert client(monkeypatch, playground=True).post("/api/offer", headers={"Origin": origin}).status_code == 200
 
 
-def test_the_orb_and_non_browser_callers_still_connect(monkeypatch):
+def test_the_orb_and_the_claude_cli_hooks_still_connect(monkeypatch):
     c = client(monkeypatch)
     assert c.post("/api/offer", headers={"Origin": ORB_ORIGIN}).status_code == 200  # the orb (main.js sets it)
-    assert c.post("/api/offer").status_code == 200  # no Origin: hooks from the claude CLI
+    assert c.get("/gui-config", headers={"Origin": ORB_ORIGIN}).status_code == 200
+    assert c.post("/hook/tok/Stop").status_code == 200  # no Origin: hooks from the claude CLI
+
+
+@pytest.mark.parametrize("route", ["/api/offer", "/gui-config", "/start", "/status", "/client/"])
+def test_no_origin_is_let_through_only_for_hooks(monkeypatch, route):
+    # Any local program (or a page that strips Origin, e.g. a navigation) could otherwise open a voice session.
+    c = client(monkeypatch)
+    assert c.request("POST" if route == "/api/offer" else "GET", route).status_code == 403
+    with pytest.raises(WebSocketDisconnect):
+        with c.websocket_connect("/ws") as s:
+            s.receive_text()
+
+
+def test_the_playground_may_load_without_an_origin(monkeypatch):
+    # A browser sends no Origin when it loads the /client page itself, nor on its same-origin GETs.
+    c = client(monkeypatch, playground=True)
+    assert c.get("/gui-config").status_code == 200
 
 
 def test_websockets_are_guarded_too(monkeypatch):

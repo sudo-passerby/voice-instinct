@@ -37,7 +37,7 @@ let status = "Not connected (is the backend running?)"; // set by the renderer
 async function guiConfig() {
   for (;;) {
     try {
-      const r = await fetch(`${BACKEND}/gui-config`);
+      const r = await fetch(`${BACKEND}/gui-config`, { headers: { Origin: ORB_ORIGIN } }); // not through the session
       if (r.ok) return { ...DEFAULTS, ...(await r.json()) };
     } catch {}
     await new Promise((res) => setTimeout(res, 2000));
