@@ -98,6 +98,10 @@ def load(path=None) -> Config:
         raise ValueError("config.toml: [assistant] awake_timeout must be a number of seconds above 0")
     if cfg.provider not in ("gemini", "openai", "ollama"):
         raise ValueError("config.toml: [model] provider must be gemini, openai or ollama")
+    for key in ("backend_timeout", "permission_timeout"):
+        v = getattr(cfg, key)
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            raise ValueError(f"config.toml: [agent] {key} must be a number of seconds")
     if not 0 < cfg.permission_timeout < cfg.backend_timeout:
         raise ValueError("config.toml: [agent] permission_timeout must be above 0 and below backend_timeout")
     if cfg.gui_position not in POSITIONS:
