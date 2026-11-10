@@ -52,13 +52,13 @@ def test_flat_legacy_file_still_works(tmp_path):
 
 
 def test_the_name_itself_is_the_wake_word_whatever_its_case_or_spacing():
-    # "Hey Nova" was heard as "hang over" or "Inova" by Parakeet and Deepgram alike; "Nova" alone came out right
     assert Config(name=" Nova ").wake_phrases[0] == "nova"
     assert Config(name="Mister  Bean").wake_phrases[0] == "mister bean"
 
 
-def test_the_merged_forms_speech_to_text_writes_also_wake_it():
-    assert {"inova", "innova", "anova", "enova", "hanova", "henova"} <= set(Config().wake_phrases)
+def test_only_the_name_wakes_it_with_every_engine():
+    for engine in ("parakeet", "whisper-small", "qwen3-asr-gpu", "nemotron"):
+        assert Config(stt_engine=engine).wake_phrases == ["nova"]
 
 
 def test_bad_position_or_empty_name_fails_fast_with_a_clear_message(tmp_path):
@@ -165,12 +165,6 @@ def test_only_english_is_offered_for_now(tmp_path):
     p.write_text('[stt]\nengine = "whisper-small"\nlanguage = "hi"\n')
     with pytest.raises(ValueError, match=r"\[stt\] language must be \"en\" for now"):
         load(p)
-
-
-def test_whisper_also_wakes_on_the_name_split_in_two():
-    from config import Config
-    assert "no va" in Config(stt_engine="whisper-small").wake_phrases
-    assert "no va" not in Config(stt_engine="parakeet").wake_phrases
 
 
 def test_keyterms_always_start_with_the_assistant_name_and_dedupe(tmp_path):

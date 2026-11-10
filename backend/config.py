@@ -67,15 +67,10 @@ class Config:
 
     @property
     def wake_phrases(self) -> list[str]:
-        """The name itself, wherever it is said ("Nova, what's on?", "hey nova"), plus the merged forms speech-to-text
-        writes for a quick "Hey Nova" ("Inova", "Anova"). Measured 2026-10-16: Parakeet and Deepgram both heard the
-        owner's "Hey Nova" as "hang over" or "Inova", while "Nova" alone came out right (#32)."""
-        words = self.name.lower().split()
-        merged = [" ".join([p + words[0], *words[1:]]) for p in ("i", "in", "a", "e", "ha", "he", "hey", "o")]
-        phrases = [" ".join(words), *merged]
-        if is_whisper(self.stt_engine):  # Whisper splits "Nova" as "no va"
-            phrases.append(" ".join([words[0][:-2] + " " + words[0][-2:], *words[1:]]))
-        return phrases
+        """Only the name itself, wherever it is said ("Nova, what's on?", "hey nova"). The merged spellings Parakeet
+        wrote for a quick "Hey Nova" ("Inova", "Anova") and Whisper's "no va" were dropped on 2026-11-10: Qwen writes
+        "Nova", and the owner wants only the name to wake it."""
+        return [" ".join(self.name.lower().split())]
 
 
 def load(path=None) -> Config:
