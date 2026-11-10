@@ -151,7 +151,7 @@ def _guarded(element, said, snapshot=None, target="e3"):
     async def go():
         reg, relay, task, ctx, bridge = setup("hi")
         if snapshot:
-            bridge.note_page({"session_id": "s1", "tool_name": "mcp__browser__browser_snapshot",
+            await bridge.note_page({"session_id": "s1", "tool_name": "mcp__browser__browser_snapshot",
                               "tool_response": f"### Snapshot\n```yaml\n{snapshot}\n```"})
         t = asyncio.create_task(bridge.on_pre_tool_use({
             "session_id": "s1", "cwd": "/w", "tool_name": "mcp__browser__browser_click",
@@ -193,9 +193,11 @@ def test_a_cancel_word_never_approves_a_name_that_also_pays():
 
 
 def test_without_the_pages_own_name_the_agents_words_never_make_it_a_cancel_question():
-    # No snapshot knows the ref: "Cancel order" is only the agent's description.
-    assert _guarded("Cancel order", "yes, cancel it") == "deny"
-    assert _guarded("Cancel order", "yes") == "allow"
+    # No node for the ref: "Cancel order" is only the agent's description. The node is nameless (a name over 900
+    # characters is left out): no cancel question; a step whose ref is not on the page at all is never asked
+    # (hooks.RESNAPSHOT).
+    assert _guarded("Cancel order", "yes, cancel it", "- button [ref=e3]") == "deny"
+    assert _guarded("Cancel order", "yes", "- button [ref=e3]") == "allow"
     # The page's own name wins over the agent's words, either way round.
     snap = '- button "Pay ₹499 and stop ads" [ref=e3]\n- button "Cancel subscription" [ref=e4]'
     assert _guarded("Cancel subscription", "yes, cancel it", snap, target="e3") == "deny"

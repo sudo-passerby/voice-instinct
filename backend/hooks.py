@@ -20,15 +20,25 @@ _EVENTS = ("PermissionRequest", "Stop", "SessionEnd", "SessionStart")
 # auto mode's classifier would say: matched on the element's text, the form's field names and the page's URL.
 # browser_type and browser_press_sequentially only when they submit (press Enter after); accepting a site's own
 # dialog (confirm("Pay ₹…?")) always asks, since its text is not in the tool input; browser_evaluate is denied
-# outright (autonomy.py).
-PRE_TOOL_MATCHER = ("^mcp__browser__browser_(click|fill_form|press_key|type|press_sequentially|keydown"
+# outright (autonomy.py). The hook sees every browser tool: one asked to write a file (filename=) is refused, since
+# Playwright MCP writes it from outside the sandbox, over the page snapshots this guard reads if it likes.
+PRE_TOOL_MATCHER = "^mcp__browser__"
+_GATED = re.compile("^mcp__browser__browser_(click|fill_form|press_key|type|press_sequentially|keydown"
                     "|select_option|handle_dialog)$")
+# The tools whose response carries a page snapshot (Response.setIncludeSnapshot / setIncludeFullSnapshot in
+# Playwright MCP 0.0.83's coreBundle.js): only their "### Snapshot" link is the page's.
+_SNAPSHOTTING = {f"mcp__browser__browser_{t}" for t in (
+    "snapshot", "click", "drag", "hover", "select_option", "file_upload", "drop", "press_key", "press_sequentially",
+    "type", "mouse_click_xy", "mouse_drag_xy", "navigate", "navigate_back", "navigate_forward", "reload",
+    "stop_recording", "tabs", "wait_for")}
+NO_FILENAME = "Don't pass filename to browser tools; the default output is fine."
+RESNAPSHOT = "I can't see that element on the page: take a full browser_snapshot (no filename), then retry."
 _SUBMITS_ONLY = ("mcp__browser__browser_type", "mcp__browser__browser_press_sequentially")
 # Debug mode's step hook (steps.py): every tool the agent uses. steps.SCREENSHOT_TOOLS picks the ones
 # that change the page and get a screenshot.
 STEP_MATCHER = "*"
-SNAPSHOT_CAP = 200_000  # characters of the latest page snapshot kept per session (bytes, read from its file)
-SNAPSHOT_READ_TIMEOUT = 2  # seconds to read a snapshot file; bot.py adds it to the hook's own timeout
+SNAPSHOT_CAP = 5_000_000  # the largest page snapshot kept (characters; bytes read from its file): beyond, none
+SNAPSHOT_READ_TIMEOUT = 2  # seconds to read a snapshot file (PostToolUse, whose hook allows 15)
 
 
 _IS_REF = re.compile(r"^(f\d+)?e\d+$")  # Playwright MCP 0.0.83's own test (targetLocators): else it is a selector
@@ -74,17 +84,19 @@ def snapshot_node(snapshot, ref):
 
 
 def _read_snapshot(path):
-    """A snapshot file's text, capped. Never follows a symlink and never waits on a FIFO or a device: only a
-    regular file is read."""
+    """A snapshot file's text. Never follows a symlink and never waits on a FIFO or a device: only a regular file
+    is read, and one over SNAPSHOT_CAP is refused."""
     fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             raise OSError(f"not a regular file: {path}")
         data = b""
-        while len(data) < SNAPSHOT_CAP and (chunk := os.read(fd, SNAPSHOT_CAP - len(data))):
+        while len(data) <= SNAPSHOT_CAP and (chunk := os.read(fd, SNAPSHOT_CAP + 1 - len(data))):
             data += chunk
     finally:
         os.close(fd)
+    if len(data) > SNAPSHOT_CAP:
+        raise OSError(f"snapshot over {SNAPSHOT_CAP} bytes: {path}")
     return data.decode("utf-8", errors="replace")
 
 
@@ -104,11 +116,11 @@ def hook_response(decision):
     return {"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": d}}
 
 
-def pre_tool_response(decision):
+def pre_tool_response(decision, reason="The user did not approve this step by voice."):
     if decision == "allow":
         return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow"}}
     return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
-                                   "permissionDecisionReason": "The user did not approve this step by voice."}}
+                                   "permissionDecisionReason": reason}}
 
 
 def _browser_target(inp):
@@ -143,7 +155,7 @@ class HookBridge:
         self.reg, self.relay, self.timeout = registry, relay, permission_timeout
         self._waiters: dict[int, asyncio.Future] = {}
         self._pages: dict[str, str] = {}  # session -> the page its browser last reported (PostToolUse)
-        self._snapshots: dict[str, str | Path] = {}  # session -> its latest snapshot: text (capped) or its file
+        self._snapshots: dict[str, str] = {}  # session -> its latest full page snapshot's text
         self._roots: dict[str, Path] = {}  # session -> the errand folder delegate made for its run (register_run)
 
     def register_run(self, session_id, workdir):
@@ -178,7 +190,7 @@ class HookBridge:
         return hook_response(await self.ask(sid, "permission", describe(p.get("tool_name"), p.get("tool_input")),
                                             p.get("tool_name"), p.get("tool_input")))
 
-    def note_page(self, p):
+    async def note_page(self, p):
         """PostToolUse: remember the page the errand browser is on and its latest snapshot, for on_pre_tool_use."""
         sid = p.get("session_id")
         if not sid or not str(p.get("tool_name", "")).startswith("mcp__browser__"):
@@ -199,14 +211,14 @@ class HookBridge:
             body = t[m.end():]
             if body.startswith("```yaml\n") and snapshot_tool:  # console text and other tools are never the page
                 inline = body[8:].split("\n```")[0]
-            elif lm := _SNAPSHOT_LINK.match(body):
+            elif (lm := _SNAPSHOT_LINK.match(body)) and p.get("tool_name") in _SNAPSHOTTING:
                 link = lm.group(1)
-        if inline:
-            self._snapshots[sid] = inline[:SNAPSHOT_CAP]
-        elif link and (f := self._snapshot_file(link, self._roots.get(sid))):
-            self._snapshots[sid] = f  # a page-changing step: a page-*.yml link, read when a step is judged
-        elif link:
-            self._snapshots.pop(sid, None)  # a file it may not read: never say an older snapshot's names
+        if link:  # a page-changing step: its page-*.yml, read now, before anything could rewrite it
+            inline = await self._read_link(sid, link)
+        if inline is not None and len(inline) <= SNAPSHOT_CAP:
+            self._snapshots[sid] = inline
+        elif inline is not None or link:  # too big, or a file it may not read: never an older snapshot's names
+            self._snapshots.pop(sid, None)
         elif url:
             self._snapshots.pop(sid, None)  # a new page and no snapshot of it: never say the old page's names
 
@@ -215,7 +227,7 @@ class HookBridge:
         """The linked snapshot file, only a regular file in <root>/.playwright-mcp: Playwright MCP writes it
         there (its cwd is the run's folder) and the sandbox denies that folder to the agent (autonomy.py); any
         other .yml the agent could have written. ponytail: its tmpdir fallback (cwd not writable) is not followed;
-        the click is then judged on the agent's words and the page URL."""
+        a ref is then refused until the agent takes a full browser_snapshot (inline)."""
         if root is None:
             return None
         try:
@@ -226,32 +238,39 @@ class HookBridge:
             return None
         return f if ok else None
 
-    async def _snapshot_text(self, sid):
-        """The latest snapshot's text, capped; a linked file is read now (the hook runs outside the sandbox),
-        off the event loop. Raises if it can't be read in time."""
-        snap = self._snapshots.get(sid)
-        if isinstance(snap, Path):
-            return await asyncio.wait_for(asyncio.to_thread(_read_snapshot, snap), SNAPSHOT_READ_TIMEOUT)
-        return snap or ""
+    async def _read_link(self, sid, link):
+        """The linked snapshot file's text (the hook runs outside the sandbox), off the event loop; None if it is
+        not one to trust or can't be read in time."""
+        if not (f := self._snapshot_file(link, self._roots.get(sid))):
+            return None
+        try:
+            return await asyncio.wait_for(asyncio.to_thread(_read_snapshot, f), SNAPSHOT_READ_TIMEOUT)
+        except (OSError, TimeoutError) as e:
+            logger.warning(f"snapshot not read ({sid[:8]}): {e!r}")
+            return None
 
     async def on_pre_tool_use(self, p):
         """A click, form fill or key press that may pay, buy, order or book asks the user first. Otherwise no
-        decision: Claude Code goes on as usual."""
+        decision: Claude Code goes on as usual. A browser tool asked to write a file, or a step on an element the
+        guard can't see on the page, is refused with what to do instead."""
         sid, inp = p.get("session_id"), p.get("tool_input") if isinstance(p.get("tool_input"), dict) else {}
         tool = p.get("tool_name")
+        if "filename" in inp:
+            return pre_tool_response(None, NO_FILENAME)
+        if not _GATED.match(str(tool)):
+            return {}
         if tool in _SUBMITS_ONLY and not inp.get("submit"):
             return {}  # text in a box commits nothing; submitting it is a key press
         if tool == "mcp__browser__browser_handle_dialog" and not inp.get("accept"):
             return {}  # dismissing a dialog commits nothing
         page = self._pages.get(sid)
         dialog = tool == "mcp__browser__browser_handle_dialog"
-        # `element` is written by the agent: also judge the line the page itself has for each ref.
-        try:
-            snapshot = await self._snapshot_text(sid) if _refs(inp) else ""
-        except (OSError, TimeoutError) as e:  # a guard that can't see the page can't judge the step: deny it
-            logger.warning(f"hook PreToolUse: snapshot unreadable, step denied ({e!r})")
-            return pre_tool_response(None)
-        nodes = [n for r in _refs(inp) if (n := snapshot_node(snapshot, r))]
+        # `element` is written by the agent: judge the line the page itself has for each ref. A ref with none (no
+        # snapshot kept, or not on it) can't be judged: refused, and the agent told how to let it be.
+        nodes = [snapshot_node(self._snapshots.get(sid), r) for r in _refs(inp)]
+        if None in nodes:
+            logger.info(f"hook PreToolUse: a ref not on the page's snapshot, refused ({str(sid)[:8]})")
+            return pre_tool_response(None, RESNAPSHOT)
         if not (dialog or MONEY_WORDS.search(" ".join([_browser_target(inp), page or "",
                                                          *(" ".join(n) for n in nodes)]))):
             return {}
@@ -329,7 +348,7 @@ def make_router(bridge, token, steps=None, budget=None):
             if event == "PreToolUse":
                 return await bridge.on_pre_tool_use(payload)
             if event == "PostToolUse":  # debug mode's step record (steps.py), then the time budget (budget.py)
-                bridge.note_page(payload)
+                await bridge.note_page(payload)
                 if steps:
                     await steps.on_step(payload)
                 return budget.on_step(payload) if budget else {}

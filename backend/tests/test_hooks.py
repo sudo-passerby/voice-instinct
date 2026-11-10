@@ -30,9 +30,24 @@ PAYLOAD = {"session_id": "s1", "cwd": "/w", "hook_event_name": "PermissionReques
            "tool_name": "Bash", "tool_input": {"command": "rm -r build"}}
 
 
-def make(timeout=5):
+def make(timeout=5, seen=("e3", "e4", "e12", "e13")):
+    """seen: refs on the page the guard has a snapshot of (harmless nodes), for sessions s1 and s2."""
     reg, relay = Registry(), FakeRelay()
-    return HookBridge(reg, relay, permission_timeout=timeout), reg, relay
+    b = HookBridge(reg, relay, permission_timeout=timeout)
+    for sid in ("s1", "s2") if seen else ():
+        b._snapshots[sid] = "\n".join(f"- generic [ref={r}]" for r in seen)
+    return b, reg, relay
+
+
+def _note(b, p):
+    asyncio.run(b.note_page(p))
+
+
+def _page(b, url, sid="s1", seen=("e3", "e4", "e12", "e13")):
+    """A full browser_snapshot of the page at url, whose refs are harmless nodes."""
+    nodes = "\n".join(f"- generic [ref={r}]" for r in seen)
+    _note(b, {"session_id": sid, "tool_name": "mcp__browser__browser_snapshot", "tool_input": {},
+              "tool_response": f"### Page\n- Page URL: {url}\n### Snapshot\n```yaml\n{nodes}\n```"})
 
 
 def test_permission_blocks_until_resolved_then_allows():
@@ -291,8 +306,7 @@ def test_a_purchase_like_click_always_asks_the_user_first(element):
 @pytest.mark.parametrize("url", ["https://secure.booking.com/book.html", "https://www.opentable.com/booking/details"])
 def test_a_booking_page_gates_even_a_harmless_click(url):
     b, reg, _ = make()
-    b.note_page({"session_id": "s1", "tool_name": "mcp__browser__browser_navigate",
-                 "tool_response": f"- Page URL: {url}\n"})
+    _page(b, url)
     out, qs = _answer(b, reg, _click("Continue"), "allow")
     assert len(qs) == 1 and url in qs[0]["prompt"]
 
@@ -316,10 +330,10 @@ def test_an_ordinary_click_is_left_to_claude_code():
 
 def test_the_question_names_the_real_target_and_the_page():
     b, reg, _ = make()
-    b.note_page({"session_id": "s1", "tool_name": "mcp__browser__browser_navigate",
-                 "tool_response": [{"type": "text", "text": "- Page URL: https://shop.example/checkout\n"}]})
+    _snap(b, _yaml('- button "Continue" [ref=e42]', before="### Page\n- Page URL: https://shop.example/checkout\n"))
     out, qs = _answer(b, reg, _click("Continue", target="e42"), "allow")  # harmless words, but a checkout page
-    assert qs[0]["prompt"] == "browser_click: Continue (ref e42) on https://shop.example/checkout"
+    assert qs[0]["prompt"] == ('browser_click: Continue (ref e42, on the page: button "Continue") '
+                               "on https://shop.example/checkout")
 
 
 SNAPSHOT = """- Page URL: https://shop.example/cart
@@ -337,7 +351,7 @@ SNAPSHOT = """- Page URL: https://shop.example/cart
 def test_a_click_is_judged_by_the_snapshots_real_name_not_the_agents_description():
     # The agent writes `element` itself: "Continue" on a ref that is really the "Pay ₹5000" button.
     b, reg, _ = make()
-    b.note_page({"session_id": "s1", "tool_name": "mcp__browser__browser_snapshot",
+    _note(b, {"session_id": "s1", "tool_name": "mcp__browser__browser_snapshot",
                  "tool_response": [{"type": "text", "text": SNAPSHOT}]})
     out, qs = _answer(b, reg, _click("Continue", target="e42"), "deny")
     assert len(qs) == 1 and out["hookSpecificOutput"]["permissionDecision"] == "deny"
@@ -360,7 +374,7 @@ await page.getByRole('link', {{ name: 'Cart' }}).click();
 
 
 def _linked(b, sid, link, cwd="/w"):
-    b.note_page({"session_id": sid, "cwd": cwd, "tool_name": "mcp__browser__browser_click",
+    _note(b, {"session_id": sid, "cwd": cwd, "tool_name": "mcp__browser__browser_click",
                  "tool_response": [{"type": "text", "text": LINKED.replace(SNAP_FILE, link)}]})
 
 
@@ -369,9 +383,8 @@ def test_a_snapshot_linked_as_a_file_is_read_when_the_step_is_judged(tmp_path):
     b.register_run("s1", tmp_path)  # delegate's own folder for the run, never the payload's cwd
     f = tmp_path / SNAP_FILE
     f.parent.mkdir()
-    f.write_text('- button "Continue" [ref=e42]')
+    f.write_text(SNAPSHOT.split("```yaml\n")[1].split("```")[0])
     _linked(b, "s1", SNAP_FILE)
-    f.write_text(SNAPSHOT.split("```yaml\n")[1].split("```")[0])  # read at PreToolUse time, not when linked
     out, qs = _answer(b, reg, _click("Continue", target="e42"), "deny")
     assert len(qs) == 1 and 'button "Pay ₹5000"' in qs[0]["prompt"]
 
@@ -422,63 +435,11 @@ def test_no_registered_run_means_no_snapshot_file_is_ever_read(tmp_path):
     assert "s1" not in b._snapshots
 
 
-def test_a_symlinked_snapshot_is_never_followed(tmp_path):
-    import os
-    b, reg, _ = make()
-    b.register_run("s1", tmp_path)
-    (tmp_path / "x.yml").write_text('- button "Continue" [ref=e7]')
-    os.symlink(tmp_path / "x.yml", _pw_dir(tmp_path) / "page-1.yml")
-    _linked(b, "s1", ".playwright-mcp/page-1.yml")
-    assert "s1" not in b._snapshots
-    # A real file swapped for a symlink after it was linked: the guard can't judge it, so it denies.
-    real = tmp_path / ".playwright-mcp" / "page-2.yml"
-    real.write_text('- button "Pay ₹5000" [ref=e7]')
-    _linked(b, "s1", ".playwright-mcp/page-2.yml")
-    real.unlink()
-    os.symlink(tmp_path / "x.yml", real)
-    out, qs = _answer(b, reg, _click("Continue", target="e7"), None)
-    assert qs == [] and out["hookSpecificOutput"]["permissionDecision"] == "deny"
-
-
-def test_a_fifo_never_blocks_the_guard_and_is_denied(tmp_path):
-    import os
-    b, reg, _ = make()
-    b.register_run("s1", tmp_path)
-    os.mkfifo(_pw_dir(tmp_path) / "page-1.yml")
-    _linked(b, "s1", ".playwright-mcp/page-1.yml")
-    assert "s1" not in b._snapshots
-    real = tmp_path / ".playwright-mcp" / "page-2.yml"
-    real.write_text('- button "Pay ₹5000" [ref=e7]')
-    _linked(b, "s1", ".playwright-mcp/page-2.yml")
-    real.unlink()
-    os.mkfifo(real)  # swapped after it was linked: opening it must not wait for a writer
-    out, qs = _answer(b, reg, _click("Continue", target="e7"), None)  # _answer gives it 1 s
-    assert qs == [] and out["hookSpecificOutput"]["permissionDecision"] == "deny"
-
-
-def test_a_snapshot_the_guard_cannot_read_denies_the_step(tmp_path, monkeypatch):
-    import time
-    import hooks
-    b, reg, _ = make()
-    b.register_run("s1", tmp_path)
-    f = _pw_dir(tmp_path) / "page-1.yml"
-    f.write_text('- button "Pay ₹5000" [ref=e7]')
-    _linked(b, "s1", ".playwright-mcp/page-1.yml")
-    f.unlink()  # gone: an error
-    out, qs = _answer(b, reg, _click("Continue", target="e7"), None)
-    assert qs == [] and out["hookSpecificOutput"]["permissionDecision"] == "deny"
-    f.write_text('- button "Pay ₹5000" [ref=e7]')
-    monkeypatch.setattr(hooks, "SNAPSHOT_READ_TIMEOUT", 0.05)
-    monkeypatch.setattr(hooks, "_read_snapshot", lambda path: time.sleep(0.5))  # a read that hangs: a timeout
-    out, qs = _answer(b, reg, _click("Continue", target="e7"), None)
-    assert qs == [] and out["hookSpecificOutput"]["permissionDecision"] == "deny"
-
-
 def test_a_purchase_step_with_no_session_is_denied():
     b, reg, _ = make()
     out, qs = _answer(b, reg, {**_click("Pay now"), "session_id": None}, None)
     assert qs == [] and out["hookSpecificOutput"]["permissionDecision"] == "deny"
-    assert _answer(b, reg, {**_click("Search"), "session_id": None}, None) == ({}, [])
+    assert _answer(b, reg, {**_click("Search", target="#search"), "session_id": None}, None) == ({}, [])
 
 
 def test_a_ref_inside_a_name_or_text_is_never_taken_for_the_nodes_own():
@@ -490,35 +451,29 @@ def test_a_ref_inside_a_name_or_text_is_never_taken_for_the_nodes_own():
 - link "Say \\"hi\\" [ref=e42]" [ref=e41] [cursor=pointer]
 - button "Pay ₹5000" [ref=e42] [cursor=pointer]
 ```"""
-    b.note_page({"session_id": "s1", "tool_name": "mcp__browser__browser_snapshot", "tool_response": spoof})
+    _note(b, {"session_id": "s1", "tool_name": "mcp__browser__browser_snapshot", "tool_response": spoof})
     out, qs = _answer(b, reg, _click("Continue", target="e42"), "deny")
     assert len(qs) == 1 and 'button "Pay ₹5000"' in qs[0]["prompt"] and "paragraph" not in qs[0]["prompt"]
 
 
 def test_a_new_page_without_a_snapshot_forgets_the_old_one():
     b, reg, _ = make()
-    b.note_page({"session_id": "s1", "tool_name": "mcp__browser__browser_snapshot", "tool_response": SNAPSHOT})
-    b.note_page({"session_id": "s1", "tool_name": "mcp__browser__browser_navigate_back",
+    _note(b, {"session_id": "s1", "tool_name": "mcp__browser__browser_snapshot", "tool_response": SNAPSHOT})
+    _note(b, {"session_id": "s1", "tool_name": "mcp__browser__browser_navigate_back",
                  "tool_response": "### Page\n- Page URL: https://news.example/\n- Page Title: News"})
-    assert _answer(b, reg, _click("Continue", target="e42"), None) == ({}, [])  # the old page's Pay is gone
+    out, qs = _answer(b, reg, _click("Continue", target="e42"), None)  # the old page's Pay is gone: snapshot again
+    assert qs == [] and _denied(out) and "browser_snapshot" in _reason(out)
 
 
 def test_a_selector_target_is_judged_by_its_own_words_and_the_old_ref_key_still_works():
     b, reg, _ = make()
     out, qs = _answer(b, reg, _click("Continue", target="text=Pay now"), "deny")
     assert len(qs) == 1 and "text=Pay now" in qs[0]["prompt"]
-    b.note_page({"session_id": "s1", "tool_name": "mcp__browser__browser_snapshot", "tool_response": SNAPSHOT})
+    _note(b, {"session_id": "s1", "tool_name": "mcp__browser__browser_snapshot", "tool_response": SNAPSHOT})
     old = {"session_id": "s1", "cwd": "/w", "tool_name": "mcp__browser__browser_click",
            "tool_input": {"element": "Continue", "ref": "e42"}}
     out, qs = _answer(b, reg, old, "deny")
     assert len(qs) == 1 and 'button "Pay ₹5000"' in qs[0]["prompt"]
-
-
-def test_the_kept_snapshot_is_bounded():
-    b, _, _ = make()
-    b.note_page({"session_id": "s1", "tool_name": "mcp__browser__browser_snapshot",
-                 "tool_response": "### Snapshot\n```yaml\n- button \"x\" [ref=e1]\n" + "a" * 1_000_000 + "\n```"})
-    assert len(b._snapshots["s1"]) <= 200_000
 
 
 def test_form_fills_and_key_presses_are_gated_too():
@@ -527,9 +482,9 @@ def test_form_fills_and_key_presses_are_gated_too():
                   fields=[{"name": "Card number", "target": "e3", "value": "4111"}, {"name": "Pay", "target": "e4"}])
     out, qs = _answer(b, reg, fill, "allow")
     assert len(qs) == 1 and "4111" not in qs[0]["prompt"]  # field names, never their values
-    b.note_page({"session_id": "s2", "tool_name": "mcp__browser__browser_click",
+    _note(b, {"session_id": "s2", "tool_name": "mcp__browser__browser_click",
                  "tool_response": "- Page URL: https://shop.example/order/review"})
-    out, qs = _answer(b, reg, _click(None, sid="s2", tool="mcp__browser__browser_press_key", key="Enter"), "deny")
+    out, qs = _answer(b, reg, _click(None, sid="s2", target=None, tool="mcp__browser__browser_press_key", key="Enter"), "deny")
     assert len(qs) == 1 and out["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
@@ -543,7 +498,8 @@ def test_every_run_gates_purchase_steps_through_the_pre_tool_hook(tmp_path):
                  "mcp__browser__browser_type", "mcp__browser__browser_keydown", "mcp__browser__browser_select_option",
                  "mcp__browser__browser_press_sequentially", "mcp__browser__browser_handle_dialog"):
         assert re.search(entry["matcher"], tool), tool  # Claude Code tests it as a JS regex
-    assert not re.search(PRE_TOOL_MATCHER, "mcp__browser__browser_clickx")
+    assert entry["matcher"] == PRE_TOOL_MATCHER  # every browser tool: one asked to write a file is refused
+    assert not any(re.search(PRE_TOOL_MATCHER, t) for t in ("Bash", "mcp__other__browser_click", "Read"))
 
 
 def test_the_route_hands_pre_tool_use_to_the_bridge():
@@ -567,8 +523,7 @@ def test_typing_is_gated_only_when_it_submits():
                                       ("mcp__browser__browser_select_option", {"values": ["Monthly"]})])
 def test_key_downs_and_dropdowns_on_a_checkout_page_are_gated(tool, inp):
     b, reg, _ = make()
-    b.note_page({"session_id": "s1", "tool_name": "mcp__browser__browser_click",
-                 "tool_response": "- Page URL: https://shop.example/checkout"})
+    _page(b, "https://shop.example/checkout")
     out, qs = _answer(b, reg, _click(None, tool=tool, **inp), "deny")
     assert len(qs) == 1 and out["hookSpecificOutput"]["permissionDecision"] == "deny"
 
@@ -641,7 +596,7 @@ def test_a_name_playwright_wraps_in_single_quotes_is_read_as_the_page_wrote_it(n
 def test_a_quoted_pay_button_asks_even_when_the_agent_calls_it_continue():
     b, reg, _ = make()
     snap = "### Snapshot\n```yaml\n" + _pw_line("button", "Pay: ₹5000", "e7") + "\n```"
-    b.note_page({"session_id": "s1", "tool_name": "mcp__browser__browser_snapshot", "tool_input": {},
+    _note(b, {"session_id": "s1", "tool_name": "mcp__browser__browser_snapshot", "tool_input": {},
                  "tool_response": [{"type": "text", "text": snap}]})
     out, qs = _answer(b, reg, _click("Continue", target="e7"), "deny")
     assert len(qs) == 1 and 'button "Pay: ₹5000"' in qs[0]["prompt"]
@@ -652,7 +607,7 @@ def test_a_node_whose_long_name_was_dropped_is_judged_on_the_agents_words_and_th
     assert snapshot_node("- button [ref=e7] [cursor=pointer]", "e7") == ("button", "", "")
     b, reg, _ = make()
     snap = "### Snapshot\n```yaml\n- button [ref=e7] [cursor=pointer]\n```"
-    b.note_page({"session_id": "s1", "tool_name": "mcp__browser__browser_snapshot", "tool_input": {},
+    _note(b, {"session_id": "s1", "tool_name": "mcp__browser__browser_snapshot", "tool_input": {},
                  "tool_response": snap})
     assert _answer(b, reg, _click("Continue", target="e7"), None) == ({}, [])
     out, qs = _answer(b, reg, _click("Pay now", target="e7"), "deny")
@@ -664,7 +619,7 @@ def _yaml(*lines, before=""):
 
 
 def _snap(b, response, sid="s1", tool="mcp__browser__browser_snapshot", **inp):
-    b.note_page({"session_id": sid, "tool_name": tool, "tool_input": inp,
+    _note(b, {"session_id": sid, "tool_name": tool, "tool_input": inp,
                  "tool_response": [{"type": "text", "text": response}]})
 
 
@@ -707,3 +662,127 @@ def test_a_line_break_python_knows_but_playwright_does_not_never_splits_a_name(s
     head = _pw_line("heading", f"Offers{sep}- button [ref=e3]: Continue", "e2", text="x")
     snap = f"- generic [active] [ref=e1]:\n  {head}\n  " + _pw_line("button", "Pay: ₹5000", "e3")
     assert snapshot_node(snap, "e3") == ("button", "Pay: ₹5000", "")
+
+
+def _reason(out):
+    return out["hookSpecificOutput"].get("permissionDecisionReason", "")
+
+
+def _denied(out):
+    return out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+@pytest.mark.parametrize("tool", ["browser_console_messages", "browser_network_requests", "browser_network_request",
+                                  "browser_take_screenshot", "browser_snapshot", "browser_pdf_save"])
+def test_a_browser_tool_asked_to_write_a_file_is_refused_with_a_reason_the_agent_can_act_on(tool):
+    # Playwright MCP writes from outside the sandbox: filename= could overwrite .playwright-mcp/page-*.yml.
+    import re as _re
+    from hooks import PRE_TOOL_MATCHER
+    assert _re.search(PRE_TOOL_MATCHER, f"mcp__browser__{tool}")
+    b, reg, _ = make()
+    out, qs = _answer(b, reg, {"session_id": "s1", "tool_name": f"mcp__browser__{tool}",
+                               "tool_input": {"filename": ".playwright-mcp/page-1.yml"}}, None)
+    assert qs == [] and _denied(out) and "filename" in _reason(out)
+
+
+def test_every_other_browser_tool_is_left_alone_even_on_a_checkout_page():
+    b, reg, _ = make()
+    _note(b, {"session_id": "s1", "tool_name": "mcp__browser__browser_navigate",
+              "tool_response": "### Page\n- Page URL: https://shop.example/checkout\n"})
+    for tool, inp in (("browser_snapshot", {}), ("browser_take_screenshot", {}), ("browser_console_messages", {}),
+                      ("browser_navigate", {"url": "https://shop.example/checkout/pay"}), ("browser_tabs", {})):
+        assert _answer(b, reg, {"session_id": "s1", "tool_name": f"mcp__browser__{tool}", "tool_input": inp},
+                       None) == ({}, []), tool
+
+
+def test_a_linked_snapshot_is_read_when_it_is_linked_so_a_later_rewrite_changes_nothing(tmp_path):
+    b, reg, _ = make()
+    b.register_run("s1", tmp_path)
+    f = _pw_dir(tmp_path) / "page-1.yml"
+    f.write_text('- button "Pay ₹5000" [ref=e7]')
+    _note(b, {"session_id": "s1", "tool_name": "mcp__browser__browser_click",
+              "tool_response": "### Snapshot\n- [Snapshot](.playwright-mcp/page-1.yml)"})
+    f.write_text('- button "Continue" [ref=e7]')  # e.g. by browser_console_messages(filename=...)
+    out, qs = _answer(b, reg, _click("Continue", target="e7"), "deny")
+    assert len(qs) == 1 and 'button "Pay ₹5000"' in qs[0]["prompt"]
+
+
+def test_a_snapshot_link_counts_only_from_a_tool_that_snapshots_the_page(tmp_path):
+    b, reg, _ = make()
+    b.register_run("s1", tmp_path)
+    (_pw_dir(tmp_path) / "evil.yml").write_text('- button "Continue" [ref=e7]')  # a download lands here too
+    _note(b, {"session_id": "s1", "tool_name": "mcp__browser__browser_snapshot", "tool_input": {},
+              "tool_response": "### Snapshot\n```yaml\n- button \"Pay ₹5000\" [ref=e7]\n```"})
+    for tool in ("browser_console_messages", "browser_network_requests", "browser_evaluate", "browser_fill_form"):
+        _note(b, {"session_id": "s1", "tool_name": f"mcp__browser__{tool}",
+                  "tool_response": "### Result\nx\n### Snapshot\n- [Snapshot](.playwright-mcp/evil.yml)"})
+    out, qs = _answer(b, reg, _click("Continue", target="e7"), "deny")
+    assert len(qs) == 1 and 'button "Pay ₹5000"' in qs[0]["prompt"]
+
+
+def test_a_snapshot_file_that_is_unsafe_or_unreadable_when_linked_is_never_kept(tmp_path, monkeypatch):
+    import os
+    import time
+    import hooks
+    b, reg, _ = make()
+    b.register_run("s1", tmp_path)
+    d = _pw_dir(tmp_path)
+    os.mkfifo(d / "fifo.yml")
+    (tmp_path / "x.yml").write_text('- button "Continue" [ref=e7]')
+    os.symlink(tmp_path / "x.yml", d / "link.yml")
+    (d / "big.yml").write_text('- button "Continue" [ref=e7]\n' + "a" * 5_000_001)
+    (d / "slow.yml").write_text('- button "Continue" [ref=e7]')
+    for name in ("fifo.yml", "link.yml", "big.yml", "gone.yml", "slow.yml"):
+        if name == "slow.yml":
+            monkeypatch.setattr(hooks, "SNAPSHOT_READ_TIMEOUT", 0.05)
+            monkeypatch.setattr(hooks, "_read_snapshot", lambda path: time.sleep(0.5))
+        b._snapshots["s1"] = '- button "Pay ₹5000" [ref=e7]'
+        _note(b, {"session_id": "s1", "tool_name": "mcp__browser__browser_click",
+                  "tool_response": f"### Snapshot\n- [Snapshot](.playwright-mcp/{name})"})
+        assert "s1" not in b._snapshots, name  # and never the older page's names either
+
+
+def test_a_ref_the_guard_cannot_see_is_refused_with_a_reason_the_agent_can_act_on():
+    b, reg, _ = make()
+    out, qs = _answer(b, reg, _click("Search", target="e7"), None)  # no snapshot at all
+    assert qs == [] and _denied(out) and "browser_snapshot" in _reason(out) and "retry" in _reason(out)
+    _note(b, {"session_id": "s1", "tool_name": "mcp__browser__browser_snapshot", "tool_input": {},
+              "tool_response": "### Snapshot\n```yaml\n- button \"Search\" [ref=e2]\n```"})
+    out, qs = _answer(b, reg, _click("Search", target="e7"), None)  # not on the page it saw
+    assert qs == [] and _denied(out) and "browser_snapshot" in _reason(out)
+    fill = _click(None, tool="mcp__browser__browser_fill_form", fields=[{"name": "Query", "target": "e9"}])
+    assert _denied(_answer(b, reg, fill, None)[0])
+
+
+def test_ordinary_steps_still_flow():
+    b, reg, _ = make()
+    _note(b, {"session_id": "s1", "tool_name": "mcp__browser__browser_snapshot", "tool_input": {},
+              "tool_response": "### Snapshot\n```yaml\n- button \"Search\" [ref=e2]\n```"})
+    assert _answer(b, reg, _click("Search", target="e2"), None) == ({}, [])  # seen, harmless: no question
+    assert _answer(b, reg, _click("Search", target="#search"), None) == ({}, [])  # a selector: its own words
+    out, qs = _answer(b, reg, _click("Continue", target="text=Pay now"), "deny")
+    assert len(qs) == 1
+    assert _answer(b, reg, _click(None, target=None, tool="mcp__browser__browser_press_key", key="ArrowDown"), None) == ({}, [])
+
+
+def test_the_whole_snapshot_is_searched_up_to_its_bound():
+    b, reg, _ = make()
+    filler = "".join(f'- link "Item {i}" [ref=e{i + 100}]\n' for i in range(20_000))  # ~600 KB
+    _note(b, {"session_id": "s1", "tool_name": "mcp__browser__browser_snapshot", "tool_input": {},
+              "tool_response": f"### Snapshot\n```yaml\n{filler}- button \"Pay ₹5000\" [ref=e7]\n```"})
+    out, qs = _answer(b, reg, _click("Continue", target="e7"), "deny")
+    assert len(qs) == 1 and 'button "Pay ₹5000"' in qs[0]["prompt"]
+    _note(b, {"session_id": "s1", "tool_name": "mcp__browser__browser_snapshot", "tool_input": {},
+              "tool_response": "### Snapshot\n```yaml\n- button \"Search\" [ref=e2]\n" + "a" * 5_000_001 + "\n```"})
+    out, qs = _answer(b, reg, _click("Search", target="e2"), None)  # too big to keep: snapshot again
+    assert qs == [] and _denied(out) and "browser_snapshot" in _reason(out)
+
+
+def test_the_route_hands_post_tool_use_snapshots_to_the_bridge():
+    b, reg, _ = make(seen=())
+    app = FastAPI()
+    app.include_router(make_router(b, "tok"))
+    TestClient(app).post("/hook/tok/PostToolUse", json={
+        "session_id": "s1", "tool_name": "mcp__browser__browser_snapshot", "tool_input": {},
+        "tool_response": [{"type": "text", "text": "### Snapshot\n```yaml\n- button \"Search\" [ref=e2]\n```"}]})
+    assert TestClient(app).post("/hook/tok/PreToolUse", json=_click("Search", target="e2")).json() == {}
