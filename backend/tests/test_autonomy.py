@@ -238,6 +238,11 @@ def test_an_errand_cannot_rewrite_the_browsers_snapshot_files():
     assert "Edit(~/.voice-instinct/workspace/trip-abc123/.playwright-mcp/**)" in s["permissions"]["deny"]
     assert "~/.voice-instinct/workspace/trip-abc123/.playwright-mcp" in s["sandbox"]["filesystem"]["denyWrite"]
     assert not any(".playwright-mcp" in r for r in sandbox_settings(HOME, APP, DATA)["permissions"]["deny"])
+    # A folder delegate could not make it in (an old errand's, of the user's): the Edit deny only, since the
+    # sandbox needs a real path to deny writes to.
+    s = sandbox_settings(HOME, APP, DATA, cwd=cwd, snapshot_dir_made=False)
+    assert "Edit(~/.voice-instinct/workspace/trip-abc123/.playwright-mcp/**)" in s["permissions"]["deny"]
+    assert not any(".playwright-mcp" in p for p in s["sandbox"]["filesystem"]["denyWrite"])
 
 
 def test_the_nightly_run_has_no_shell():

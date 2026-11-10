@@ -59,9 +59,10 @@ class World:
         self.folders = self.fresh_folders()
         self.backend, self.grants = Backend(), []
 
-        def settings_for(sid, debug_cwd=None, grant=None, cwd=None):
+        def settings_for(sid, debug_cwd=None, grant=None, cwd=None, **kw):
             self.grants.append(grant)
             self.cwds = getattr(self, "cwds", []) + [cwd]
+            self.extras = getattr(self, "extras", []) + [kw]
             return None
 
         (self.delegate,) = make_tools(self.backend, self.reg, settings_for, workspace_root=self.ws, home=self.home,
@@ -295,8 +296,7 @@ def test_every_run_gets_its_own_folder_for_the_snapshot_denies(w):
     assert (Path(w.cwds[-1]) / ".playwright-mcp").is_dir()  # made first, so the sandbox has a path to deny
 
 
-def test_the_purchase_guard_reads_snapshots_only_from_the_runs_own_folder(w):
-    # Pinned by delegate for the run (hooks.register_run), never taken from a hook payload's cwd; cleared after.
+def _spy_roots(w):
     seen = []
     run = w.backend.run
 
@@ -305,6 +305,39 @@ def test_the_purchase_guard_reads_snapshots_only_from_the_runs_own_folder(w):
         return await run(task, session_id=session_id, **kw)
 
     w.backend.run = spy
+    return seen
+
+
+def test_an_old_errand_in_the_users_own_folder_gets_no_snapshot_folder_made_there(w):
+    # Errands from before grants ran in a folder of the user's: never litter it, and never deny a path that is not
+    # there. Its snapshots then are not the guard's to trust (the sandbox does not keep the agent out of them).
+    trip = (w.home / "Documents" / "trip").resolve()
+    w.reg.upsert_session("old-errand", origin="delegated", mode="headless", state="idle", cwd=str(trip))
+    task = w.reg.create_task("old-errand", "plan the trip")
+    seen = _spy_roots(w)
+    out, _ = w.go(w.delegate, "and the hotels", errand=task, reply="yes")
+    assert out[-1]["status"] == "done" and w.backend.calls[-1]["cwd"] == str(trip)
+    assert not (trip / ".playwright-mcp").exists()
+    assert w.extras[-1] == {"snapshot_dir_made": False} and seen == [None]
+
+
+def test_a_snapshot_folder_that_cannot_be_made_never_fails_the_errand(w, monkeypatch):
+    real = Path.mkdir
+
+    def mkdir(self, *a, **kw):
+        if self.name == ".playwright-mcp":
+            raise PermissionError("read-only")
+        return real(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "mkdir", mkdir)
+    seen = _spy_roots(w)
+    out, _ = w.go(w.delegate, "find flights")
+    assert out[-1]["status"] == "done" and w.extras[-1] == {"snapshot_dir_made": False} and seen == [None]
+
+
+def test_the_purchase_guard_reads_snapshots_only_from_the_runs_own_folder(w):
+    # Pinned by delegate for the run (hooks.register_run), never taken from a hook payload's cwd; cleared after.
+    seen = _spy_roots(w)
     out, _ = w.go(w.delegate, "find flights")
     assert seen == [Path(w.backend.calls[-1]["cwd"])] and w.bridge._roots == {}
 

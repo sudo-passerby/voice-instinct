@@ -88,10 +88,13 @@ def _grant_rules(folder: Path, access: str, home: Path) -> dict:
     return out
 
 
-def sandbox_settings(home, app_dir, data_dir, hook_port=7860, errand=True, grant=None, cwd=None) -> dict:
+def sandbox_settings(home, app_dir, data_dir, hook_port=7860, errand=True, grant=None, cwd=None,
+                     snapshot_dir_made=True) -> dict:
     """grant: (folder, "read" | "write" | "delete") the user said yes to for this errand, or None. cwd: the run's
     folder, whose .playwright-mcp snapshots the purchase guard reads (hooks.py), so the agent may not change them;
-    Playwright MCP writes them itself from outside the sandbox (an MCP server, not a Bash command)."""
+    Playwright MCP writes them itself from outside the sandbox (an MCP server, not a Bash command).
+    snapshot_dir_made: False when delegate did not make that folder, so the sandbox has no path to deny writes to;
+    the Edit deny stays."""
     home, app_dir, data_dir = Path(home), Path(app_dir), Path(data_dir)
     # Memory (memory.py): errands grep it but never change it, and never read the raw journal of conversations.
     dirs = [home / d for d in _SECRET_DIRS] + [data_dir / "runs"] + ([data_dir / "memory/journal"] if errand else [])
@@ -105,10 +108,12 @@ def sandbox_settings(home, app_dir, data_dir, hook_port=7860, errand=True, grant
         deny += [f"Read({_rule(p, home)})", f"Edit({_rule(p, home)})"]
     deny += [f"{t}(~/{g})" for g in _SECRET_GLOBS for t in ("Read", "Edit")]
     # Not writable: code that runs outside the sandbox later.
+    snapshots = [Path(cwd) / ".playwright-mcp"] if cwd and errand else []
     no_write_dirs = [app_dir] + [data_dir / d for d in _DATA_CODE] + [home / d for d in _RUNS_LATER_DIRS] + (
-        [Path(cwd) / ".playwright-mcp"] if cwd and errand else [])
+        snapshots if snapshot_dir_made else [])
     no_write_files = [home / f for f in _RUNS_LATER_FILES]
-    deny += [f"Edit({_rule(p, home)}/**)" for p in no_write_dirs] + [f"Edit({_rule(p, home)})" for p in no_write_files]
+    deny += [f"Edit({_rule(p, home)}/**)" for p in no_write_dirs + (snapshots if not snapshot_dir_made else [])]
+    deny += [f"Edit({_rule(p, home)})" for p in no_write_files]
     deny += [f"Edit(~/{g})" for g in _RUNS_LATER_GLOBS]
     gr = _grant_rules(Path(grant[0]), grant[1], home) if grant else {}
     s = {

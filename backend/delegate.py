@@ -174,10 +174,19 @@ def make_tools(backend, registry, settings_for, on_finish=None, workspace_root=N
             try:  # setup too: once "started" is said, the errand must always report back
                 extra = {"grant": grant} if grant else {}  # enforced in the run's own settings (autonomy.py)
                 # The browser's snapshots, read by the purchase guard, are denied to the agent (autonomy.py); made
-                # now so the sandbox has a real path to deny.
-                (wd / ".playwright-mcp").mkdir(parents=True, exist_ok=True)
+                # now so the sandbox has a real path to deny. Only in the private workspace: never in a folder of the
+                # user's (an errand from before grants), and a folder that can't be made never fails the errand.
+                made = False
+                if wd.resolve().is_relative_to(workspace_root.resolve()):
+                    try:
+                        (wd / ".playwright-mcp").mkdir(parents=True, exist_ok=True)
+                        made = True
+                    except OSError as e:
+                        logger.warning(f"no snapshot folder for {sid[:8]}: {e!r}")
                 extra["cwd"] = str(wd)
-                if bridge:  # the only folder whose snapshots the guard reads for this run (hooks.py)
+                if not made:
+                    extra["snapshot_dir_made"] = False  # its Edit deny stays; the sandbox's write deny can't
+                if bridge and made:  # the only folder whose snapshots the guard reads for this run (hooks.py)
                     bridge.register_run(sid, wd)
                 if steps:  # debug mode: a browser of our own and every step recorded (steps.py)
                     mcp = await steps.start(sid, str(wd))

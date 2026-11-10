@@ -152,9 +152,10 @@ ERRANDS = errand_lock()
 FOLDERS = Folders(DATA / "folders.json", Path.home(), DATA, REPO_ROOT, Path(cfg.workspace_dir).expanduser())
 
 
-def _run_settings(sid, debug_cwd=None, grant=None, cwd=None):
+def _run_settings(sid, debug_cwd=None, grant=None, cwd=None, snapshot_dir_made=True):
     """This run's settings file: hooks, sandbox, deny rules and the folder grant the user said yes to."""
-    autonomy = sandbox_settings(Path.home(), REPO_ROOT, DATA, hook_port=HOOK_PORT, grant=grant, cwd=cwd)
+    autonomy = sandbox_settings(Path.home(), REPO_ROOT, DATA, hook_port=HOOK_PORT, grant=grant, cwd=cwd,
+                                snapshot_dir_made=snapshot_dir_made)
     return write_run_settings(
         DATA / "runs", sid, HOOK_TOKEN, HOOK_PORT,
         extra=autonomy if debug_cwd is None else with_debug_record(autonomy, debug_cwd, Path.home()),
