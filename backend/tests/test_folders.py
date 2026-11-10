@@ -336,9 +336,36 @@ def test_nova_s_own_questions_never_show_as_errands(w):
                                        # A negated "once" or "this time" is a refusal, not a one-off yes.
                                        ("Not this time.", "no"), ("not once", "no"), ("Not always.", "no"),
                                        ("not now", "no"), ("not yet", "no"), ("no, not this time", "no"),
-                                       ("once", "once"), ("just this once", "once")])
+                                       ("once", "once"), ("just this once", "once"),
+                                       ("ok only this time", "once"), ("haan once", "once"), ("sure always", "always"),
+                                       ("sure, for now", "once"), ("go ahead", "once")])
 def test_once_or_always_comes_from_the_users_own_words(said, want):
     assert grant_answer(said) == want
+
+
+# Re-review 2026-11-10: each of these is a refusal and once granted access ("once" or "this time" counted as a yes).
+REFUSALS = ["not even once", "not even this time", "not at this time", "Not at this time, thanks",
+            "let's not do it this time", "skip it this time", "leave it this time", "deny it this time",
+            "I won't allow it this time", "can't allow even once", "refuse this once", "once is not ok",
+            "nah, not even once", "nahi, once bhi nahi", "na, this time nahi", "absolutely not", "rather not"]
+
+
+@pytest.mark.parametrize("said", REFUSALS)
+def test_a_refusal_never_grants_whatever_option_word_it_contains(said):
+    from confirm import standing_answer
+    assert grant_answer(said) not in ("once", "always") and standing_answer(said) not in ("once", "always")
+
+
+@pytest.mark.parametrize("said", ["pass on it this time", "eh, once I guess", "the other folder, once"])
+def test_an_unknown_phrasing_re_asks_rather_than_grants(said):
+    assert grant_answer(said) == "unclear"
+
+
+@pytest.mark.parametrize("said,want", [("sure, for now", "once"), ("yes for today only", "once"), ("yes", "always"),
+                                       ("always", "always"), ("just this once", "once")])
+def test_a_one_off_yes_to_a_standing_question_saves_nothing(said, want):
+    from confirm import standing_answer
+    assert standing_answer(said) == want
 
 
 HOME, APP, DATA = Path("/home/u"), Path("/home/u/voice-instinct"), Path("/home/u/.voice-instinct")

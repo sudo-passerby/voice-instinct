@@ -49,3 +49,10 @@ def test_a_question_or_a_hesitation_is_never_a_yes():
 def test_a_real_refusal_still_wins():
     for s in ["yes no", "yeah, don't", "ok never mind", "no, cancel it", "nope, stop"]:
         assert classify(s) == "no", s
+
+
+def test_not_sure_is_a_hesitation_and_any_other_negation_refuses():
+    for s in ["not sure", "I'm not certain", "I don't know"]:
+        assert classify(s) == "unclear", s
+    for s in ["not now", "nah", "I won't", "can't do that", "nahi", "skip it"]:
+        assert classify(s) == "no", s
