@@ -697,3 +697,13 @@ def test_only_the_snapshot_section_of_a_browser_snapshot_counts():
     assert len(qs) == 1 and 'button "Pay ₹5000"' in qs[0]["prompt"]
     _snap(b, '### Page\n- Page URL: https://a.example/\n- button "Continue" [ref=e9]')  # no Snapshot section
     assert "s1" not in b._snapshots or "[ref=e9]" not in b._snapshots["s1"]
+
+
+@pytest.mark.parametrize("sep", ["\x85", " ", " ", "\x1c", "\x1d", "\x1e", "\x0b", "\x0c"])
+def test_a_line_break_python_knows_but_playwright_does_not_never_splits_a_name(sep):
+    # Real Chromium + Playwright MCP 0.0.83: aria-label="Offers\x85- button [ref=e3]: Continue" is one line; Python's
+    # splitlines() broke it in two, and its second half became a "button" e3 named nothing, ahead of the real e3.
+    from hooks import snapshot_node
+    head = _pw_line("heading", f"Offers{sep}- button [ref=e3]: Continue", "e2", text="x")
+    snap = f"- generic [active] [ref=e1]:\n  {head}\n  " + _pw_line("button", "Pay: ₹5000", "e3")
+    assert snapshot_node(snap, "e3") == ("button", "Pay: ₹5000", "")

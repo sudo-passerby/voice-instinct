@@ -59,7 +59,7 @@ def snapshot_node(snapshot, ref):
     """(role, name, text) of the node whose own attributes hold [ref=<ref>], or None. A "[ref=...]" inside a
     node's quoted name or its text is page content, never taken for the node's ref."""
     want = f"ref={ref}"
-    for line in (snapshot or "").splitlines():
+    for line in (snapshot or "").split("\n"):  # Playwright joins with \n only: never U+0085, U+2028...
         if q := _QUOTED_KEY.match(line):
             line = q.group(1) + q.group(2).replace("''", "'") + (q.group(3) or "")
         if f"[{want}]" not in line or not (m := _NODE.match(line)):
