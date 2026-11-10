@@ -61,6 +61,14 @@ Deleting is asked for only when you say to delete something, is only ever for th
 each delete is asked again before it runs. Hidden folders (`~/.config`, `~/.local`, ...), this app's
 own code and data, your whole home folder and anything outside it can never be granted.
 
+What a grant does not cover yet: it limits what an errand writes, not what it reads. An errand can
+still read files outside its grant (anything but the secrets listed below), without asking. A shell
+command that reaches a folder without naming it (through a variable, a script, or `cd` and a relative
+path) is not asked about, though the sandbox still stops it writing outside its workspace and the
+granted folder. And deletes are caught only as shell commands (`rm`, `mv`, `find -delete`, ...): a
+program that deletes files itself (`python -c ...`, a script) is not caught inside a folder it may
+change.
+
 Ask "what folders can you access?" to hear the standing grants, and "stop accessing Documents" to
 remove one (no confirmation needed). They live in `~/.voice-instinct/folders.json`, read on every
 errand, so you can also edit it by hand; an entry for a folder that can never be granted is ignored.
