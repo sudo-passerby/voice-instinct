@@ -37,6 +37,9 @@ _IS_REF = re.compile(r"^(f\d+)?e\d+$")  # Playwright MCP 0.0.83's own test (targ
 # A snapshot node (Playwright's aria YAML, renderAriaSnapshotAsYaml): `- role "name" [attr] [attr]...`, then an
 # optional `: text`. The name is JSON-quoted, so a quote inside it is escaped.
 _NODE = re.compile(r'^\s*- ([^\s":\[]+)(?: ("(?:[^"\\]|\\.)*"))?((?: \[[^\]\s]*\])*)(?::\s?(.*))?$')
+# yamlEscapeKeyIfNeeded wraps the whole key in single quotes (a ' inside doubled) when the name holds ": ", " #",
+# {, }, a backtick and the like: `- 'button "Pay: ₹5000" [ref=e7]'`, then the same optional `: text`.
+_QUOTED_KEY = re.compile(r"^(\s*- )'((?:[^']|'')*)'(:.*)?$")
 _SNAPSHOT_LINK = re.compile(r"^- \[Snapshot\]\((.+)\)$", re.M)  # a page-changing step's snapshot, in a file
 
 
@@ -56,6 +59,8 @@ def snapshot_node(snapshot, ref):
     node's quoted name or its text is page content, never taken for the node's ref."""
     want = f"ref={ref}"
     for line in (snapshot or "").splitlines():
+        if q := _QUOTED_KEY.match(line):
+            line = q.group(1) + q.group(2).replace("''", "'") + (q.group(3) or "")
         if f"[{want}]" not in line or not (m := _NODE.match(line)):
             continue
         if want in re.findall(r"\[([^\]]*)\]", m.group(3) or ""):

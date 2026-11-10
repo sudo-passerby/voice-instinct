@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 import stat
 from pathlib import Path
 
@@ -500,3 +501,55 @@ def test_accepting_a_site_dialog_always_asks_and_dismissing_it_never_does():
     out, qs = _answer(b, reg, _click(None, accept=True, **dialog), "deny")
     assert len(qs) == 1 and out["hookSpecificOutput"]["permissionDecision"] == "deny"
     assert "pop-up" in qs[0]["prompt"] and "{" not in qs[0]["prompt"]  # said aloud: no raw JSON
+
+
+def _yaml_key(key):
+    """Playwright's yamlEscapeKeyIfNeeded (coreBundle.js, packages/isomorphic/yaml.ts), ported to build test lines."""
+    def needs(s):
+        try:
+            float(s)
+            numeric = True
+        except ValueError:
+            numeric = False
+        return bool(not s or re.search(r"^\s|\s$", s) or re.search(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]", s)
+                    or s.startswith("-") or re.search(r"[\n:](\s|$)", s) or re.search(r"\s#", s)
+                    or re.search(r"[\n\r]", s) or re.match(r"""[&*\],?!>|@"'#%]""", s) or re.search(r"[{}`]", s)
+                    or s.startswith("[") or numeric
+                    or s.lower() in ("y", "n", "yes", "no", "true", "false", "on", "off", "null"))
+    return "'" + key.replace("'", "''") + "'" if needs(key) else key
+
+
+def _pw_line(role, name, ref, text=None):
+    """One snapshot line exactly as Playwright MCP 0.0.83 writes it (renderAriaSnapshotAsYaml)."""
+    key = _yaml_key(f"{role} {json.dumps(name, ensure_ascii=False)} [ref={ref}] [cursor=pointer]")
+    return f"- {key}" + (f": {text}" if text is not None else "")
+
+
+@pytest.mark.parametrize("name", ["Pay: ₹5000", "Total: ₹499 – Pay", "#1 Buy now", "Item #1 Buy now",
+                                  "Pay `now`", "Pay {₹500}", "Rahul's order: Pay ₹500", "Pay: ''₹500''"])
+def test_a_name_playwright_wraps_in_single_quotes_is_read_as_the_page_wrote_it(name):
+    from hooks import snapshot_node
+    line = _pw_line("button", name, "e7")
+    assert snapshot_node(f"- generic [ref=e2]:\n  {line}", "e7") == ("button", name, "")
+    assert snapshot_node(_pw_line("link", name, "e7", text="it's here"), "e7") == ("link", name, "it's here")
+
+
+def test_a_quoted_pay_button_asks_even_when_the_agent_calls_it_continue():
+    b, reg, _ = make()
+    snap = "### Snapshot\n```yaml\n" + _pw_line("button", "Pay: ₹5000", "e7") + "\n```"
+    b.note_page({"session_id": "s1", "tool_name": "mcp__browser__browser_snapshot", "tool_input": {},
+                 "tool_response": [{"type": "text", "text": snap}]})
+    out, qs = _answer(b, reg, _click("Continue", target="e7"), "deny")
+    assert len(qs) == 1 and 'button "Pay: ₹5000"' in qs[0]["prompt"]
+
+
+def test_a_node_whose_long_name_was_dropped_is_judged_on_the_agents_words_and_the_page():
+    from hooks import snapshot_node
+    assert snapshot_node("- button [ref=e7] [cursor=pointer]", "e7") == ("button", "", "")
+    b, reg, _ = make()
+    snap = "### Snapshot\n```yaml\n- button [ref=e7] [cursor=pointer]\n```"
+    b.note_page({"session_id": "s1", "tool_name": "mcp__browser__browser_snapshot", "tool_input": {},
+                 "tool_response": snap})
+    assert _answer(b, reg, _click("Continue", target="e7"), None) == ({}, [])
+    out, qs = _answer(b, reg, _click("Pay now", target="e7"), "deny")
+    assert len(qs) == 1
