@@ -313,6 +313,16 @@ def test_revoke_removes_the_grant_without_asking(w):
     assert len(asked) == 1  # it asks again
 
 
+def test_revoke_also_takes_the_folder_away_from_errands_that_ran_under_it(w):
+    # Resumes keep the grant they ran under (registry): "stop accessing Documents" must still stop them.
+    out, _ = w.go(w.delegate, "plan the trip", "~/Documents/trip", reply="always")
+    w.go(w.revoke_folder, "~/Documents")
+    _, asked = w.go(w.delegate, "add the hotel", errand=out[-1]["errand"])
+    assert asked == [] and w.grants[-1] is None  # its private workspace only
+    _, asked = w.go(w.delegate, "add the hotel", "~/Documents/trip", errand=out[-1]["errand"], reply="no")
+    assert len(asked) == 1  # naming the folder again asks again
+
+
 def test_nova_s_own_questions_never_show_as_errands(w):
     w.go(w.allow_folder, "~/Documents", "read", reply="yes")
     assert w.reg.list_sessions() == []

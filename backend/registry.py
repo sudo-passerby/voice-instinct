@@ -167,6 +167,13 @@ class Registry:
                         "DO UPDATE SET folder=excluded.folder, access=excluded.access, at=excluded.at",
                         (session_id, str(folder), access, self.clock()))
 
+    def revoke_grants(self, folder):
+        """Drop every errand's grant for this folder or one under it (revoke_folder): their resumes ask again."""
+        gone = [r["session_id"] for r in self.db.execute("SELECT session_id, folder FROM grants")
+                if Path(r["folder"]).is_relative_to(folder)]
+        self.db.executemany("DELETE FROM grants WHERE session_id=?", [(s,) for s in gone])
+        return len(gone)
+
     def get_grant(self, session_id):
         return self._one("SELECT folder, access FROM grants WHERE session_id=?", (session_id,))
 

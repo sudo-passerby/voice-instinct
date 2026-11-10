@@ -185,6 +185,7 @@ def make_folder_tools(folders, bridge, registry, home):
         """
         folder = resolve_folder(path, home)
         n = folders.revoke(folder)
+        registry.revoke_grants(folder)  # errands that ran under it keep it otherwise, for their resumes
         still = folders.access(folder)
         await params.result_callback({"status": "revoked" if n else "none_found", "removed": n, "note":
             f"A grant on a parent folder still gives {still} access." if still else "No standing access is left."})
