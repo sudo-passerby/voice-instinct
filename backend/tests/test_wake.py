@@ -77,16 +77,15 @@ def test_programmatic_wake_lets_the_next_reply_through_without_the_phrase():
 
 def test_keep_awake_restarts_the_window_only_when_awake():
     async def go():
-        sent = []
-
-        async def send(m):
-            sent.append(m)
-
-        w = make_wake(["hey nova"], 10, send)
+        w = await _ready_wake()  # set up and awake
+        w.sleep()
         w.keep_awake()  # asleep: must not wake it
-        return w.awake
+        await asyncio.sleep(0.05)
+        asleep = not w.awake
+        await w.cleanup()
+        return asleep
 
-    assert asyncio.run(go()) is False
+    assert asyncio.run(go()) is True
 
 
 def test_keep_awake_extends_the_window_while_awake_then_it_sleeps():
