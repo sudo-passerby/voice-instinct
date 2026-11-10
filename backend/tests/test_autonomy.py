@@ -219,6 +219,8 @@ def test_code_that_runs_outside_the_sandbox_later_cannot_be_changed():
     for f in ("~/.bashrc", "~/.zshrc", "~/.profile", "~/.bash_profile", "~/.zprofile"):
         assert f"Edit({f})" in rules and f in deny_write, f
     assert "Edit(~/**/.claude/**)" in rules and "Edit(~/**/CLAUDE*.md)" in rules
+    # Git hooks and direnv files run code later, outside the sandbox: never writable, granted folder or not.
+    assert "Edit(~/**/.git/hooks/**)" in rules and "Edit(~/**/.envrc)" in rules
     # Linux's sandbox ignores wildcards in denyWrite other than a trailing /**: only plain paths go there.
     assert not any("*" in p for p in deny_write)
 

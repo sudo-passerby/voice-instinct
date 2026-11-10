@@ -356,6 +356,14 @@ def test_write_access_lets_it_change_files_but_never_delete_or_move_them():
         assert rule in s["permissions"]["deny"], rule
 
 
+@pytest.mark.parametrize("access", ["write", "delete"])
+def test_a_granted_folder_s_git_hooks_and_envrc_are_never_writable(access):
+    s = _perm(access)
+    assert "Edit(~/**/.git/hooks/**)" in s["permissions"]["deny"] and "Edit(~/**/.envrc)" in s["permissions"]["deny"]
+    deny_write = s["sandbox"]["filesystem"]["denyWrite"]  # the shell too: plain paths at the folder's top
+    assert "~/Documents/trip/.git/hooks" in deny_write and "~/Documents/trip/.envrc" in deny_write
+
+
 def test_delete_access_asks_before_every_delete():
     s = _perm("delete")
     assert set(DELETE_COMMANDS) <= set(s["permissions"]["ask"])

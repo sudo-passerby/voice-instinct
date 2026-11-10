@@ -28,7 +28,8 @@ _DATA_CODE = ("node", "browser", "models", "qwen-asr")
 # Any Claude settings or instructions under home, at any depth (Claude Code loads them; see consolidation_settings).
 # Edit rules only: Linux's sandbox ignores these wildcards in denyWrite, but the sandbox protects .claude
 # settings in the working directory itself.
-_RUNS_LATER_GLOBS = ("**/.claude/**", "**/CLAUDE*.md")
+# Git hooks and direnv's .envrc run code later too (the next git command, the next cd), granted folders included.
+_RUNS_LATER_GLOBS = ("**/.claude/**", "**/CLAUDE*.md", "**/.git/hooks/**", "**/.envrc")
 # Pages the errand browser may never request: this app's own server and anything else local. Playwright MCP
 # 0.0.83's format (originOrHostGlob in playwright-core): "http://host:*" covers every explicit port but not
 # the default one, so that is listed too; "http://[::1]:*" is not understood, the bare-host forms are (any
@@ -80,6 +81,8 @@ def _grant_rules(folder: Path, access: str, home: Path) -> dict:
     else:
         out["allow"].append(f"Edit({rule}/**)")
         out["allowWrite"].append(fs)
+        # The shell writes there too, and the sandbox ignores the _RUNS_LATER_GLOBS: the folder's own ones.
+        out["denyWrite"] += [f"{fs}/.git/hooks", f"{fs}/.envrc"]
         out["deny" if access == "write" else "ask"] += DELETE_COMMANDS
     return out
 
