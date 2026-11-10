@@ -133,7 +133,8 @@ class HookBridge:
                 self.reg.resolve_question(qid, "answered" if decision else "expired", decision)
                 s = self.reg.get_session(sid)
                 if s and s["state"] == "waiting_input":  # do not resurrect an ended session
-                    self.reg.set_state(sid, "running")
+                    # A folder question comes before its run starts (delegate.py), so no run is going yet.
+                    self.reg.set_state(sid, "idle" if kind == "folder" else "running")
                 self.relay.question_closed(qid, expired=timed_out)
                 if not fut.done():
                     fut.set_result(decision)

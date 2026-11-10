@@ -133,8 +133,11 @@ def make_tools(backend, registry, settings_for, on_finish=None, workspace_root=N
             if folder is not None:
                 grant, why = await grant_for(params, sid, wd, folder, access, held)
                 if grant is None:
-                    if not resume and registry.get_session(sid):
+                    session = registry.get_session(sid)
+                    if session and not resume:
                         registry.set_state(sid, "ended", end_reason="refused")
+                    elif session and session["state"] not in ("ended", "idle"):  # nothing runs: never "running"
+                        registry.set_state(sid, "idle")
                     await params.result_callback({"status": "refused", "errand": errand, "result": why,
                                                   "instruction": "Tell the user in one short sentence."})
                     return

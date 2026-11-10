@@ -195,6 +195,29 @@ def test_a_resume_that_repeats_the_folder_keeps_its_higher_access(w):
     assert asked == [] and w.grants[-1] == ((w.home / "Documents/trip").resolve(), "write")
 
 
+def test_a_refused_resume_leaves_the_errand_idle_not_running(w):
+    out, _ = w.go(w.delegate, "plan the trip", "~/Documents/trip", reply="yes")
+    sid = w.backend.calls[-1]["sid"]
+    w.go(w.delegate, "fix a typo", errand=out[-1]["errand"], access="write", reply="no")
+    assert w.reg.get_session(sid)["state"] == "idle"
+
+
+def test_a_cancelled_folder_question_leaves_the_errand_idle(w):
+    async def go():
+        p, _ = w.params()
+        t = asyncio.create_task(w.delegate(p, "plan the trip", "~/Documents/trip"))
+        for _ in range(20):
+            await asyncio.sleep(0)
+        (q,) = w.reg.open_questions()
+        t.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await t
+        return q["session_id"]
+
+    sid = asyncio.run(go())
+    assert w.backend.calls == [] and w.reg.get_session(sid)["state"] == "idle"
+
+
 def test_a_hand_edit_to_the_file_counts_at_once(w):
     f = w.home / ".voice-instinct" / "folders.json"
     f.parent.mkdir(parents=True, exist_ok=True)
