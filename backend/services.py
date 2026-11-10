@@ -5,6 +5,7 @@ import asyncio
 import functools
 import json
 import os
+import re
 import time
 import urllib.request
 from collections.abc import AsyncGenerator
@@ -287,6 +288,13 @@ class QwenASRClient:
     def create_stream(self):
         return _QwenStream()
 
+    def _echoes_keyterms(self, text: str) -> bool:
+        """On quiet audio Qwen reads its context back ("Nova, Deepak, Priya, ..."), which would wake the assistant
+        (2026-11-10). Three or more words, every one of them a key term, is that echo, not speech."""
+        terms = {w for t in self.keyterms for w in t.lower().split()}
+        words = re.findall(r"[^\W_]+", text.lower())
+        return len(words) >= 3 and all(w in terms for w in words)
+
     def decode_stream(self, stream):
         try:
             req = urllib.request.Request(f"http://127.0.0.1:{self.port}/transcribe",
@@ -294,7 +302,7 @@ class QwenASRClient:
                                          headers={"Content-Type": "application/json"})
             with urllib.request.urlopen(req, timeout=self.timeout) as r:
                 text = json.load(r)["text"]
-            stream.result.text = text if isinstance(text, str) else ""
+            stream.result.text = text if isinstance(text, str) and not self._echoes_keyterms(text) else ""
         except Exception as e:  # down, slow, 500, bad JSON: a missed sentence, never a crashed pipeline
             stream.result.text = ""
             if time.monotonic() - self._last_warned > 30:
