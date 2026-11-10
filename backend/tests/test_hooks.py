@@ -388,3 +388,4 @@ def test_accepting_a_site_dialog_always_asks_and_dismissing_it_never_does():
     assert _answer(b, reg, _click(None, accept=False, **dialog), None) == ({}, [])
     out, qs = _answer(b, reg, _click(None, accept=True, **dialog), "deny")
     assert len(qs) == 1 and out["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "pop-up" in qs[0]["prompt"] and "{" not in qs[0]["prompt"]  # said aloud: no raw JSON
