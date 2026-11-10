@@ -1,8 +1,11 @@
 import asyncio
 import json
 import os
+import signal
 import time
 from pathlib import Path
+
+import pytest
 
 from claude_cli import READ_ONLY_TOOLS, ClaudeCodeBackend, parse_stream
 
@@ -260,3 +263,31 @@ def test_a_group_that_exits_on_sigterm_is_not_waited_for(tmp_path):
         return time.monotonic() - t0
 
     assert asyncio.run(go()) < 1
+
+
+def test_a_stop_cancelled_again_during_the_grace_period_still_kills_the_group(tmp_path):
+    # A second barge-in or a session teardown cancels the stop mid-sleep: the SIGKILL must still go out.
+    from claude_cli import _end_group
+
+    pidfile = tmp_path / "pids"
+    cli = _script(tmp_path, f"trap '' TERM\nsh -c 'trap \"\" TERM; while :; do sleep 0.1; done' &\n"
+                            f"echo $$ $! > {pidfile}\nwhile :; do sleep 0.1; done\n")
+
+    async def go():
+        proc = await asyncio.create_subprocess_exec(cli, start_new_session=True)
+        await asyncio.sleep(0.4)
+        stop = asyncio.create_task(_end_group(proc, grace=30))
+        await asyncio.sleep(0.2)
+        stop.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await stop
+        await asyncio.wait_for(proc.wait(), 3)
+
+    try:
+        asyncio.run(go())
+    finally:
+        leader, stubborn = map(int, pidfile.read_text().split())
+        alive = not (_dead(leader) and _dead(stubborn))
+        if alive:  # never leave the test's own processes behind
+            os.killpg(leader, signal.SIGKILL)
+    assert not alive

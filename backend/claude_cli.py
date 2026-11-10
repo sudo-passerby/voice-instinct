@@ -67,16 +67,18 @@ async def _end_group(proc, grace: float = 3.0) -> None:
         return
     loop = asyncio.get_running_loop()
     deadline = loop.time() + grace
-    while loop.time() < deadline:
-        await asyncio.sleep(0.05)
-        try:
-            os.killpg(proc.pid, 0)  # anyone left in the group?
-        except ProcessLookupError:
-            return
     try:
-        os.killpg(proc.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
+        while loop.time() < deadline:
+            await asyncio.sleep(0.05)
+            try:
+                os.killpg(proc.pid, 0)  # anyone left in the group?
+            except ProcessLookupError:
+                return
+    finally:  # also when cancelled again mid-wait (a second barge-in): never leave the group running
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
 
 
 class ClaudeCodeBackend:
