@@ -272,13 +272,25 @@ def _answer(b, reg, payload, decision):
 
 @pytest.mark.parametrize("element", ["Pay now", "Make payment", "Buy now", "Purchase", "Place order", "Checkout",
                                      "Check out", "Subscribe", "Start subscription", "Confirm booking", "Book now",
-                                     "Reserve a table", "Confirm", "Donate", "Bid", "Place bid"])
+                                     "Reserve a table", "Confirm", "Donate", "Bid", "Place bid",
+                                     "Book", "Book table", "Book ride", "Complete booking", "Complete reservation",
+                                     "Start free trial", "Upgrade", "Request ride", "Get tickets",
+                                     "Complete purchase", "Renew", "Make a reservation"])
 def test_a_purchase_like_click_always_asks_the_user_first(element):
     # Auto mode's classifier approves clicks on its own; anything that may spend money goes to the user.
     b, reg, relay = make()
     out, qs = _answer(b, reg, _click(element), "allow")
     assert len(qs) == 1 and relay.raised == [qs[0]["id"]]
     assert out["hookSpecificOutput"] == {"hookEventName": "PreToolUse", "permissionDecision": "allow"}
+
+
+@pytest.mark.parametrize("url", ["https://secure.booking.com/book.html", "https://www.opentable.com/booking/details"])
+def test_a_booking_page_gates_even_a_harmless_click(url):
+    b, reg, _ = make()
+    b.note_page({"session_id": "s1", "tool_name": "mcp__browser__browser_navigate",
+                 "tool_response": f"- Page URL: {url}\n"})
+    out, qs = _answer(b, reg, _click("Continue"), "allow")
+    assert len(qs) == 1 and url in qs[0]["prompt"]
 
 
 def test_a_no_or_no_answer_blocks_the_purchase():
@@ -291,7 +303,8 @@ def test_a_no_or_no_answer_blocks_the_purchase():
 
 def test_an_ordinary_click_is_left_to_claude_code():
     b, reg, relay = make()
-    for el in ("Search", "Next page", "Sort by price", "Facebook", "Bookmarks", "Add to cart", "Reorder"):
+    for el in ("Search", "Next page", "Sort by price", "Facebook", "Bookmarks", "Bookmark this page",
+               "Add to cart", "Reorder", "Tickets FAQ", "Facebook login"):
         out, qs = _answer(b, reg, _click(el), None)
         assert out == {} and qs == [], el
     assert relay.raised == []

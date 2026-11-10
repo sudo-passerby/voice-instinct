@@ -86,8 +86,11 @@ Errands can neither read nor change that file.
   by the model, and only after it actually asked you. Clicks and form entries in the errand browser
   are not asked one by one: Claude Code's auto-mode safety checks approve or refuse them, and the
   browser's tools that could run code or upload your files are turned off. A click, form fill, key
-  press, dropdown choice or submitted text whose button, fields or page say pay, buy, order, checkout,
-  subscribe, book, confirm, donate or bid is always asked first; if that check fails, the step is refused.
+  press, dropdown choice or submitted text whose button, fields or page has one of these whole words is
+  always asked first: pay, payment, buy, purchase, complete purchase, order, checkout, check out,
+  subscribe, subscription, trial, upgrade, renew, confirm, confirm booking, book, booking, book now,
+  complete booking, reserve, reservation, request ride, get tickets, donate, bid, place bid. "Add to
+  cart", "reorder" and "bookmark" don't count. If that check fails, the step is refused.
 - It is instructed never to buy, pay, book or cancel without your explicit go-ahead.
 - The microphone stays open so it can hear the wake phrase. What it hears is transcribed on your
   machine and thrown away until you say the phrase; it is not stored or sent anywhere.

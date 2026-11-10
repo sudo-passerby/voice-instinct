@@ -22,9 +22,11 @@ _EVENTS = ("PermissionRequest", "Stop", "SessionEnd", "SessionStart")
 PRE_TOOL_MATCHER = ("^mcp__browser__browser_(click|fill_form|press_key|type|press_sequentially|keydown"
                     "|select_option|handle_dialog)$")
 _SUBMITS_ONLY = ("mcp__browser__browser_type", "mcp__browser__browser_press_sequentially")
-# Whole words: "add to cart" and "reorder" stay unmatched.
-MONEY_WORDS = re.compile(r"\b(pay|payment|buy|purchase|order|checkout|check out|subscribe|subscription"
-                         r"|confirm|confirm booking|book now|reserve|donate|bid|place bid)\b", re.I)
+# Whole words: "add to cart", "reorder" and "bookmark" stay unmatched. Keep README.md's list in step with this one.
+MONEY_WORDS = re.compile(r"\b(pay|payment|buy|purchase|complete purchase|order|checkout|check out|subscribe"
+                         r"|subscription|trial|upgrade|renew|confirm|confirm booking|book|booking|book now"
+                         r"|complete booking|reserve|reservation|request ride|get tickets|donate|bid|place bid)\b",
+                         re.I)
 # Debug mode's step hook (steps.py): every tool the agent uses. steps.SCREENSHOT_TOOLS picks the ones
 # that change the page and get a screenshot.
 STEP_MATCHER = "*"
