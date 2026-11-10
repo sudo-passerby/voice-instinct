@@ -4,65 +4,36 @@ instructions, and tells a fact to remember from a reminder."""
 import asyncio
 import json
 import os
-from pathlib import Path
 
 import pytest
 from dotenv import load_dotenv
 
-from config import Config
-from memory import PROMPT
+from config import REPO_ROOT, Config
+from memory import PROMPT, Memory, make_memory_tools
 from pipecat.frames.frames import ErrorFrame, FunctionCallsStartedFrame, LLMContextFrame
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.tests.utils import run_test
+from registry import Registry
+from reminders import make_reminder_tools
 from services import build_llm
 
 pytestmark = pytest.mark.claude
-load_dotenv(Path.home() / "voice-instinct/.env")
+load_dotenv(REPO_ROOT / ".env")
 
-
-async def remember(params, fact: str):
-    """Save a fact about the user for good.
-
-    Args:
-        fact: The fact in one short sentence, in the third person.
-    """
-
-
-async def forget(params, text: str):
-    """Delete what you remember about something, when the user asks you to forget it.
-
-    Args:
-        text: The words the facts to delete contain.
-    """
-
-
-async def recall(params, query: str):
-    """Look up what you remember about the user.
-
-    Args:
-        query: The words to look for.
-    """
-
-
-async def set_reminder(params, when: str, what: str):
-    """Set a reminder.
-
-    Args:
-        when: The exact local time, e.g. 2026-10-16 17:00.
-        what: What to remind the user of.
-    """
-
-
-TOOLS = [remember, forget, recall, set_reminder]
 SYSTEM = (PROMPT + "It is 2026-10-16 09:00 local time. For reminders, call set_reminder with the exact local time."
           "\n\nWhat you know about the user:\n# Noted recently\n- 2026-10-16: Is vegetarian")
 
 
-def _first_call(said):
+def _first_call(said, tmp_path):
+    """The real tools Nova has (bot.py), so Gemini sees their real names, docstrings and parameters. A temp memory
+    and an in-memory registry: a call that runs touches nothing of the user's."""
+    memory = Memory(tmp_path / "memory")
+    memory.ensure()
+    tools = [*make_reminder_tools(Registry(), None), *make_memory_tools(memory)]
     llm = build_llm(Config(), SYSTEM)
-    for f in TOOLS:
+    for f in tools:
         llm.register_direct_function(f)
-    ctx = LLMContext(messages=[{"role": "user", "content": said}], tools=TOOLS)
+    ctx = LLMContext(messages=[{"role": "user", "content": said}], tools=tools)
     down, up = asyncio.run(run_test(llm, frames_to_send=[LLMContextFrame(ctx)]))
     assert not [f for f in up + down if isinstance(f, ErrorFrame)]
     (calls,) = [f for f in down if isinstance(f, FunctionCallsStartedFrame)]
@@ -76,7 +47,7 @@ def _first_call(said):
     ("Forget that I'm vegetarian.", "forget", "vegetarian"),
     ("What's my sister's name again?", "recall", "sister"),
 ])
-def test_gemini_picks_the_memory_tool_the_user_meant(said, tool, word):
-    name, args = _first_call(said)
+def test_gemini_picks_the_memory_tool_the_user_meant(said, tool, word, tmp_path):
+    name, args = _first_call(said, tmp_path)
     assert name == tool, (name, args)
     assert word in json.dumps(args).lower()

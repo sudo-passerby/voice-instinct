@@ -224,3 +224,48 @@ def test_new_notes_survive_a_full_profile(tmp_path):
     (m.root / "profile.md").write_text("# Profile\n" + "x" * CONTEXT_CAP)
     m.remember("Is vegetarian")
     assert "Is vegetarian" in m.context() and len(m.context()) <= CONTEXT_CAP
+
+
+def test_remember_and_forget_wait_for_the_notes_lock(tmp_path):
+    import threading
+    m = mem(tmp_path)
+    m.remember("Is vegetarian")
+    for fn in (lambda: m.remember("Likes chai"), lambda: m.forget("vegetarian")):
+        t = threading.Thread(target=fn)
+        with m.notes_lock():
+            t.start()
+            t.join(0.3)
+            assert t.is_alive()  # it waits: the nightly run is reading or writing notes.md
+        t.join(5)
+    assert (m.root / "notes.md").read_text() == "- 2026-10-16: Likes chai\n"
+    assert "forget:" in log(m)  # forget still commits while it holds .lock itself
+
+
+def test_forget_holds_the_tidying_lock_for_its_whole_run(tmp_path):
+    import fcntl
+    m = mem(tmp_path)
+    m.remember("Is vegetarian")
+    seen, files = [], m._files
+
+    def probe(*a, **kw):  # in the middle of forget: could the nightly run start now?
+        with open(m.root / ".lock", "a") as f:
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                seen.append("free")
+            except BlockingIOError:
+                seen.append("held")
+        return files(*a, **kw)
+    m._files = probe
+    assert len(m.forget("vegetarian")) == 1 and seen == ["held"]
+
+
+def test_a_busy_probe_never_makes_the_nightly_run_skip(tmp_path):
+    import fcntl
+    import threading
+    m = mem(tmp_path)
+    f = open(m.root / ".lock", "a")
+    fcntl.flock(f, fcntl.LOCK_SH)  # a probe (or a forget) at the moment the run starts
+    threading.Timer(0.2, f.close).start()
+    with m.tidying():
+        assert m.busy()
+    assert not m.busy()

@@ -38,7 +38,8 @@ class Telegram:
     async def _post(self, method, body):
         """body() builds the request. A 429 (over ~1 message/s per chat, e.g. a burst of quick steps) is
         retried once after the wait Telegram asks for; sends are queued in order (steps.StepHub._send),
-        so that wait also spaces out the rest."""
+        so that wait also spaces out the rest. True: sent. False: failed, worth retrying later. None: refused
+        (a 4xx other than 429: a wrong token or chat), so retrying cannot help."""
         try:
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as s:
                 for attempt in (1, 2):
@@ -47,7 +48,7 @@ class Telegram:
                             wait = ((await r.json(content_type=None)).get("parameters") or {}).get("retry_after", 1)
                         elif r.status != 200:
                             logger.warning(f"telegram {method} failed: HTTP {r.status}")
-                            return False
+                            return None if 400 <= r.status < 500 and r.status != 429 else False
                         else:
                             return True
                     await asyncio.sleep(min(float(wait), 30))

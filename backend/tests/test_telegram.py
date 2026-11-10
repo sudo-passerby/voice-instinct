@@ -111,3 +111,17 @@ def test_send_message_reports_whether_it_was_delivered():
 
     assert asyncio.run(go(200)) is True and asyncio.run(go(500)) is False
     assert asyncio.run(Telegram("T", 1, base="http://127.0.0.1:9").send_message("hi")) is False
+
+
+def test_a_refusal_is_told_apart_from_a_failure_worth_retrying():
+    # A 4xx other than 429 (a wrong token or chat id) never gets better; reminders stop retrying it there.
+    async def go(status):
+        server, _ = _bot(status=status)
+        await server.start_server()
+        try:
+            return await Telegram("T", 1, base=str(server.make_url("")).rstrip("/")).send_message("hi")
+        finally:
+            await server.close()
+
+    assert asyncio.run(go(400)) is None and asyncio.run(go(403)) is None
+    assert asyncio.run(go(502)) is False

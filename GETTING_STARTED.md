@@ -55,7 +55,8 @@ its token and your chat id in `.env`:
     TELEGRAM_BOT_TOKEN=123456:ABC...
     TELEGRAM_CHAT_ID=123456789
 
-They go only to that one chat, and only in debug mode.
+They go only to that one chat, and only in debug mode. The same two lines also let a reminder reach you
+in Telegram when the screen is locked or the orb is not running.
 
 ## If it doesn't respond
 
