@@ -52,7 +52,9 @@ Built on [Pipecat](https://docs.pipecat.ai).
 - When Claude Code asks for permission, your yes or no is decided by code from your own words, never
   by the model, and only after it actually asked you. Clicks and form entries in the errand browser
   are not asked one by one: Claude Code's auto-mode safety checks approve or refuse them, and the
-  browser's tools that could run code or upload your files are turned off.
+  browser's tools that could run code or upload your files are turned off. A click, form fill or key
+  press whose button, fields or page say pay, buy, order, checkout, subscribe or book is always
+  asked first.
 - It is instructed never to buy, pay, book or cancel without your explicit go-ahead.
 - The microphone stays open so it can hear the wake phrase. What it hears is transcribed on your
   machine and thrown away until you say the phrase; it is not stored or sent anywhere.

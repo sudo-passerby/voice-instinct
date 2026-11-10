@@ -3,6 +3,8 @@ import json
 import stat
 from pathlib import Path
 
+import pytest
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -248,3 +250,86 @@ def test_every_run_gets_the_step_hook_for_the_time_budget(tmp_path):
 def test_the_step_hook_sees_every_tool_the_agent_uses():
     # An errand researched with WebSearch alone recorded "0 steps" when only browser tools were hooked.
     assert STEP_MATCHER == "*"  # Claude Code's matcher for every tool
+
+
+def _click(element, ref="e12", sid="s1", tool="mcp__browser__browser_click", **inp):
+    return {"session_id": sid, "cwd": "/w", "hook_event_name": "PreToolUse", "tool_name": tool,
+            "tool_input": {"element": element, "ref": ref, **inp} if element else {"ref": ref, **inp}}
+
+
+def _answer(b, reg, payload, decision):
+    async def go():
+        t = asyncio.create_task(b.on_pre_tool_use(payload))
+        for _ in range(5):
+            await asyncio.sleep(0)
+        qs = reg.open_questions()
+        if qs and decision:
+            b.resolve(qs[0]["id"], decision)
+        return await asyncio.wait_for(t, 1), qs
+
+    return asyncio.run(go())
+
+
+@pytest.mark.parametrize("element", ["Pay now", "Make payment", "Buy now", "Purchase", "Place order", "Checkout",
+                                     "Check out", "Subscribe", "Start subscription", "Confirm booking", "Book now",
+                                     "Reserve a table"])
+def test_a_purchase_like_click_always_asks_the_user_first(element):
+    # Auto mode's classifier approves clicks on its own; anything that may spend money goes to the user.
+    b, reg, relay = make()
+    out, qs = _answer(b, reg, _click(element), "allow")
+    assert len(qs) == 1 and relay.raised == [qs[0]["id"]]
+    assert out["hookSpecificOutput"] == {"hookEventName": "PreToolUse", "permissionDecision": "allow"}
+
+
+def test_a_no_or_no_answer_blocks_the_purchase():
+    b, reg, _ = make(timeout=0.05)
+    out, _ = _answer(b, reg, _click("Place order"), "deny")
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+    out, _ = _answer(b, reg, _click("Pay now", ref="e13"), None)  # times out
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_an_ordinary_click_is_left_to_claude_code():
+    b, reg, relay = make()
+    for el in ("Search", "Next page", "Sort by price", "Facebook", "Bookmarks"):
+        out, qs = _answer(b, reg, _click(el), None)
+        assert out == {} and qs == [], el
+    assert relay.raised == []
+
+
+def test_the_question_names_the_real_target_and_the_page():
+    b, reg, _ = make()
+    b.note_page({"session_id": "s1", "tool_name": "mcp__browser__browser_navigate",
+                 "tool_response": [{"type": "text", "text": "- Page URL: https://shop.example/checkout\n"}]})
+    out, qs = _answer(b, reg, _click("Continue", ref="e42"), "allow")  # harmless words, but a checkout page
+    assert qs[0]["prompt"] == "browser_click: Continue (ref e42) on https://shop.example/checkout"
+
+
+def test_form_fills_and_key_presses_are_gated_too():
+    b, reg, _ = make()
+    fill = _click(None, tool="mcp__browser__browser_fill_form",
+                  fields=[{"name": "Card number", "ref": "e3", "value": "4111"}, {"name": "Pay", "ref": "e4"}])
+    out, qs = _answer(b, reg, fill, "allow")
+    assert len(qs) == 1 and "4111" not in qs[0]["prompt"]  # field names, never their values
+    b.note_page({"session_id": "s2", "tool_name": "mcp__browser__browser_click",
+                 "tool_response": "- Page URL: https://shop.example/order/review"})
+    out, qs = _answer(b, reg, _click(None, sid="s2", tool="mcp__browser__browser_press_key", key="Enter"), "deny")
+    assert len(qs) == 1 and out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_every_run_gates_purchase_steps_through_the_pre_tool_hook(tmp_path):
+    import re
+    from hooks import PRE_TOOL_MATCHER
+    hooks = json.loads(Path(write_run_settings(tmp_path, "a", "tok", 7860, hook_timeout=100)).read_text())["hooks"]
+    (entry,) = hooks["PreToolUse"]
+    assert entry["hooks"][0]["url"].endswith("/hook/tok/PreToolUse") and entry["hooks"][0]["timeout"] == 100
+    for tool in ("mcp__browser__browser_click", "mcp__browser__browser_fill_form", "mcp__browser__browser_press_key"):
+        assert re.search(entry["matcher"], tool), tool  # Claude Code tests it as a JS regex
+    assert not re.search(PRE_TOOL_MATCHER, "mcp__browser__browser_clickx")
+
+
+def test_the_route_hands_pre_tool_use_to_the_bridge():
+    b, reg, _ = make()
+    app = FastAPI()
+    app.include_router(make_router(b, "tok"))
+    assert TestClient(app).post("/hook/tok/PreToolUse", json=_click("Search")).json() == {}
