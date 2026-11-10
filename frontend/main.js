@@ -7,7 +7,7 @@ const { trayItems } = require("./tray.js");
 
 const BACKEND = "http://127.0.0.1:7860"; // the page's CSP allows only this backend
 const ORB_ORIGIN = "http://orb.invalid"; // same as backend/guard.py
-const DEFAULTS = { name: "Nova", size: 128, position: "top-right" }; // same as backend/config.py
+const DEFAULTS = { size: 128, position: "top-right" }; // same as backend/config.py
 app.setName("voice-instinct"); // Wayland app_id / X11 class, used by compositor window rules
 // Chromium's WebRTC gain control turns the system mic level down by itself (100% drifted to 82%, and the
 // user had to shout to wake it). The user's mic setting is left as they set it.
@@ -77,6 +77,7 @@ function createWindow() {
   // A crashed or frozen page cannot reconnect itself: reload it (it reconnects on load).
   win.webContents.on("render-process-gone", (_e, d) => {
     log(`page gone: ${d.reason}`);
+    loaded = false; // a toggle until the reload finishes waits for it (did-finish-load) instead of going nowhere
     if (d.reason !== "clean-exit") setTimeout(() => { if (!win.isDestroyed()) win.reload(); }, 1000); // no tight crash loop
   });
   win.webContents.on("unresponsive", () => { log("page unresponsive; restarting it"); win.webContents.forcefullyCrashRenderer(); });

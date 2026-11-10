@@ -8,7 +8,6 @@ def make_gui_router(cfg) -> APIRouter:
 
     @router.get("/gui-config")
     async def gui_config():
-        return {"name": cfg.name, "size": cfg.gui_size, "position": cfg.gui_position,
-                "awake_timeout": cfg.awake_timeout}
+        return {"size": cfg.gui_size, "position": cfg.gui_position}
 
     return router
