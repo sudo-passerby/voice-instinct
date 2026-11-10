@@ -55,6 +55,9 @@ def _browser_target(inp):
 
 def describe(tool_name, tool_input, page=None):
     inp = tool_input if isinstance(tool_input, dict) else {"input": tool_input}
+    if tool_name == "mcp__browser__browser_handle_dialog":  # the dialog's own text never reaches the hook
+        return "accept a pop-up the site opened" + (f" on {page}" if page else "") + (
+            f", answering {str(inp['promptText'])[:80]!r}" if inp.get("promptText") else "") + " (it may confirm a payment)"
     if str(tool_name).startswith("mcp__browser__") and (inp.get("element") or inp.get("fields") or inp.get("key")):
         # The element text is the agent's own description: give the page ref it really targets as well.
         ref = f" (ref {inp['ref']})" if inp.get("ref") else ""

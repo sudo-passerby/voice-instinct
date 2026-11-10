@@ -644,7 +644,7 @@ def test_a_folder_answer_tells_once_from_always():
         return out[-1]["status"], fut.result() if fut.done() else None
 
     assert run(go("yes")) == ("allowed", "once")
-    assert run(go("always is fine")) == ("allowed", "always")
+    assert run(go("yes, always")) == ("allowed", "always")
     assert run(go("no")) == ("denied", "deny")
 
 

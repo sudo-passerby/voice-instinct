@@ -56,3 +56,20 @@ def test_not_sure_is_a_hesitation_and_any_other_negation_refuses():
         assert classify(s) == "unclear", s
     for s in ["not now", "nah", "I won't", "can't do that", "nahi", "skip it"]:
         assert classify(s) == "no", s
+
+
+# Fuzzing, 2026-11-10: consent is an allowlist, so an unknown word asks again instead of approving.
+def test_a_deferral_a_condition_or_a_question_without_a_question_mark_is_never_a_yes():
+    for s in ["ok later", "do it tomorrow", "ok rehne do", "theek hai chhodo", "ok only if it's cheap", "is it fine",
+              "you sure", "I'm fine", "ok bas", "can you confirm the price", "haan baad mein", "han", "ji"]:
+        assert classify(s) != "yes", s
+
+
+def test_curly_apostrophes_and_hindi_refusals_refuse():
+    for s in ["ok don’t", "okay, don’t do it", "haan nahin", "mat karo", "fine cancel", "ok stop"]:
+        assert classify(s) == "no", s
+
+
+def test_hinglish_yeses_are_yes():
+    for s in ["haan", "haan ji", "theek hai", "haan kar do", "yes thank you"]:
+        assert classify(s) == "yes", s

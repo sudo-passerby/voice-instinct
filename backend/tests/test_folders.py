@@ -338,7 +338,8 @@ def test_nova_s_own_questions_never_show_as_errands(w):
                                        ("not now", "no"), ("not yet", "no"), ("no, not this time", "no"),
                                        ("once", "once"), ("just this once", "once"),
                                        ("ok only this time", "once"), ("haan once", "once"), ("sure always", "always"),
-                                       ("sure, for now", "once"), ("go ahead", "once")])
+                                       ("sure, for now", "unclear"), ("go ahead", "once"), ("haan ek baar", "once"),
+                                       ("ok later", "unclear"), ("is it fine", "unclear"), ("ok don’t", "no")])
 def test_once_or_always_comes_from_the_users_own_words(said, want):
     assert grant_answer(said) == want
 
@@ -361,11 +362,12 @@ def test_an_unknown_phrasing_re_asks_rather_than_grants(said):
     assert grant_answer(said) == "unclear"
 
 
-@pytest.mark.parametrize("said,want", [("sure, for now", "once"), ("yes for today only", "once"), ("yes", "always"),
-                                       ("always", "always"), ("just this once", "once")])
+@pytest.mark.parametrize("said,want", [("sure, for now", "unclear"), ("yes for today only", "unclear"),
+                                       ("yes one time", "once"), ("haan ek baar", "once"), ("ok just now", "once"),
+                                       ("yes", "always"), ("always", "always"), ("just this once", "once")])
 def test_a_one_off_yes_to_a_standing_question_saves_nothing(said, want):
     from confirm import standing_answer
-    assert standing_answer(said) == want
+    assert standing_answer(said) == want  # only "always" saves; "unclear" asks again
 
 
 HOME, APP, DATA = Path("/home/u"), Path("/home/u/voice-instinct"), Path("/home/u/.voice-instinct")
