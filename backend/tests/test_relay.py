@@ -178,6 +178,7 @@ def test_cancel_or_stop_approve_a_guarded_click_only_when_its_real_target_cancel
     assert _on_page("Unsubscribe from the paid subscription", "yes, stop it") == "allow"
     assert _on_page("End subscription", "yeah, cancel") == "allow"
     assert _on_page("Cancel my order", "yes, cancel it") == "allow"
+    assert _on_page("Cancel order #40213", "yes, cancel it") == "allow"  # a number, but no price
     assert _on_page("Pay & stop ads", "yes, stop") == "deny"
     assert _on_page("Subscription settings: cancel", "yes, cancel it") == "deny"  # must start with it
     assert _on_page("Cancellation subscription", "yes, cancel") == "deny"  # whole words
@@ -187,7 +188,8 @@ def test_cancel_or_stop_approve_a_guarded_click_only_when_its_real_target_cancel
 
 def test_a_cancel_word_never_approves_a_name_that_also_pays():
     for name in ("Stop & Pay ₹500", "Cancel anytime – Subscribe ₹499", "End-of-season sale: Buy now",
-                 "Cancel subscription and pay ₹99 fee"):
+                 "Cancel subscription and pay ₹99 fee", "Stop free trial – continue Premium ₹199/mo",
+                 "End trial & start membership ₹999", "End trial, €5 a month"):
         assert _on_page(name, "yes, cancel it") == "deny", name
         assert _on_page(name, "yes") == "allow", name  # a plain yes still approves any question
 

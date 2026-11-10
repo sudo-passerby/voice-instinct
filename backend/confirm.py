@@ -53,14 +53,20 @@ MONEY_WORDS = re.compile(r"\b(pay|payment|buy|purchase|complete purchase|order|c
 _CANCELS = re.compile(r"^\W*(cancel|stop|unsubscribe|end)\b", re.I)
 # What a cancellation cancels: these money words name it, every other one pays ("Stop & Pay ₹500").
 _CANCELLED = {"payment", "order", "subscription", "trial", "booking", "reservation"}
+# A price after the cancel word means it charges too ("Stop free trial – continue Premium ₹199/mo"): a currency
+# sign or code, a per-period amount, or an amount with paise or cents. Never a bare number ("Cancel order #40213").
+_PRICE = re.compile(r"[₹$€£¥]|\b(rs|inr|usd|eur|gbp)\.?\s*\d|\d\s*(/|per\s+|a\s+)\s*(mo|month|yr|year|week|wk|day)\b"
+                    r"|\b\d[\d,]*\.\d\d\b", re.I)
 
 
 def names_a_cancellation(target_name) -> bool:
     """A browser element whose real name starts with cancel, stop, unsubscribe or end (whole words) and pays for
-    nothing: the "Cancel subscription" button, not "Pay & stop ads" or "Cancel anytime – Subscribe ₹499"."""
+    nothing and names no price: the "Cancel subscription" button, not "Pay & stop ads" or "Cancel anytime –
+    Subscribe ₹499"."""
     name = str(target_name or "")
     m = _CANCELS.match(name)
-    return bool(m) and all(w.group(0).lower() in _CANCELLED for w in MONEY_WORDS.finditer(name, m.end()))
+    return bool(m) and not _PRICE.search(name, m.end()) and all(
+        w.group(0).lower() in _CANCELLED for w in MONEY_WORDS.finditer(name, m.end()))
 
 
 def _verdict(reply: str, question: str = "", names=(), about_cancel=None):

@@ -110,3 +110,12 @@ def test_curly_apostrophes_and_hindi_refusals_refuse():
 def test_hinglish_yeses_are_yes():
     for s in ["haan", "haan ji", "theek hai", "haan kar do", "yes thank you"]:
         assert classify(s) == "yes", s
+
+
+def test_a_cancellation_that_names_a_price_is_none():
+    from confirm import names_a_cancellation
+    for name in ("Cancel and keep Premium $9.99", "Stop plan – Rs 499/month", "Cancel downgrade: 1,499.00 per year",
+                 "Cancel anytime, 299/mo", "Stop free trial – continue Premium ₹199/mo", "End my plan £4 a week"):
+        assert not names_a_cancellation(name), name
+    for name in ("Cancel subscription", "Cancel order #40213", "Cancel 2 tickets", "Stop 3 alerts", "End trial"):
+        assert names_a_cancellation(name), name
