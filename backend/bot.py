@@ -263,10 +263,13 @@ async def bot(runner_args: RunnerArguments):
     # neither side is talking.
     @user_aggregator.event_handler("on_user_turn_started")
     async def on_user_turn_started(aggregator, strategy):
+        logger.info("user turn started")  # markers only
         relay.user_turn(True)
 
     @user_aggregator.event_handler("on_user_turn_stopped")
     async def on_user_turn_stopped(aggregator, strategy, message):
+        logger.info(f"user turn ended ({type(strategy).__name__ if strategy else 'timeout'}, "
+                    f"{'words' if message.content else 'nothing heard'})")
         relay.user_turn(False)
         MEMORY.journal("user", message.content)  # for the nightly memory run; speech before the wake phrase never gets here
 
