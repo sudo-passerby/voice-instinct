@@ -6,16 +6,14 @@
   "description": "Floating voice orb for voice-instinct",
   "main": "main.js",
   "scripts": {
-    "build": "esbuild renderer/app.jsx --bundle --format=iife --platform=browser --jsx=automatic --outfile=renderer/bundle.js",
+    "build": "esbuild renderer/app.js --bundle --format=iife --platform=browser --outfile=renderer/bundle.js",
     "start": "npm run build && electron .",
-    "test": "node --test tests/*.test.js"
+    "test": "node --test tests/*.test.js",
+    "preview": "esbuild renderer/preview.js --bundle --format=iife --platform=browser --outfile=renderer/preview.bundle.js"
   },
   "dependencies": {
     "@pipecat-ai/client-js": "~1.13.1",
-    "@pipecat-ai/small-webrtc-transport": "~1.10.8",
-    "orb-ui": "^0.10.0",
-    "react": "^19.3.0",
-    "react-dom": "^19.3.0"
+    "@pipecat-ai/small-webrtc-transport": "~1.10.8"
   },
   "devDependencies": {
     "electron": "^44.7.0",

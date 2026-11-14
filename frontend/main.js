@@ -3,11 +3,11 @@ const { app, BrowserWindow, Tray, Menu, ipcMain, screen, session } = require("el
 const path = require("node:path");
 const fs = require("node:fs");
 const os = require("node:os");
-const { trayItems } = require("./tray.js");
+const { trayItems, trayIcon, trayTooltip } = require("./tray.js");
 
 const BACKEND = "http://127.0.0.1:7860"; // the page's CSP allows only this backend
 const ORB_ORIGIN = "http://orb.invalid"; // same as backend/guard.py
-const DEFAULTS = { size: 128, position: "top-right" }; // same as backend/config.py
+const DEFAULTS = { size: 128, position: "top-right", name: "Nova" }; // same as backend/config.py
 app.setName("voice-instinct"); // Wayland app_id / X11 class, used by compositor window rules
 // Chromium's WebRTC gain control turns the system mic level down by itself (100% drifted to 82%, and the
 // user had to shout to wake it). The user's mic setting is left as they set it.
@@ -31,6 +31,8 @@ let win = null;
 let tray = null;
 let muted = false;
 let status = "Not connected (is the backend running?)"; // set by the renderer
+let running = 0, asking = false; // errands in flight and a waiting question, from the renderer (the backend's news)
+let name = DEFAULTS.name; // the assistant's name, for the tooltip; the backend's once it answers
 
 // At login the backend may still be loading its models: start with the defaults, keep asking, and
 // apply the user's size and position once it answers.
@@ -57,6 +59,7 @@ function placement(cfg) {
   return spots[cfg.position] || spots["bottom-right"];
 }
 
+let refreshTray = () => {}; // set once the tray exists
 let loaded = false, pendingToggle = false; // a toggle before the page loads is applied once it has
 function toggle() {
   if (win && loaded) win.webContents.send("toggle");
@@ -93,6 +96,8 @@ function createWindow() {
   guiConfig().then((c) => {
     const [x, y] = placement(c);
     win.setBounds({ x, y, width: c.size, height: c.size });
+    name = String(c.name || DEFAULTS.name);
+    refreshTray();
   });
 }
 
@@ -123,12 +128,20 @@ app.whenReady().then(async () => {
     cb(permission === "media" && ours(wc) && micOnly(details?.mediaTypes)));
   session.defaultSession.setPermissionCheckHandler((wc, permission) => permission === "media" && ours(wc));
   createWindow();
-  tray = new Tray(path.join(__dirname, "icon.png"));
+  const now = () => ({ status, muted, running, asking });
+  let icon = trayIcon(now());
+  tray = new Tray(path.join(__dirname, icon));
   const setMuted = (m) => { muted = m; win.webContents.send("mute", muted); refresh(); };
-  const menu = () => Menu.buildFromTemplate(trayItems({ status, muted }, { toggle, setMuted, quit: () => app.quit() }));
-  const refresh = () => { tray.setToolTip(`voice-instinct: ${menu().items[0].label}`); tray.setContextMenu(menu()); };
+  const refresh = () => {
+    tray.setToolTip(trayTooltip(name, now()));
+    tray.setContextMenu(Menu.buildFromTemplate(trayItems(now(), { toggle, setMuted, quit: () => app.quit() })));
+    const next = trayIcon(now());
+    if (next !== icon) tray.setImage(path.join(__dirname, (icon = next)));
+  };
+  refreshTray = refresh;
   refresh();
   ipcMain.on("status", (_e, text) => { status = text; refresh(); });
+  ipcMain.on("errands", (_e, n, q) => { running = Number(n) || 0; asking = Boolean(q); refresh(); });
   if (process.argv.includes("--toggle")) toggle();
 });
 
