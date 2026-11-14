@@ -133,7 +133,7 @@ def test_kokoro_loads_once_per_process_and_off_the_event_loop(tmp_path, monkeypa
 
 
 def test_the_shared_kokoro_service_is_set_up_like_pipecats_own(monkeypatch):
-    # SharedKokoroTTSService skips KokoroTTSService.__init__ (it loads the model): pinned to Pipecat 1.12.
+    # SharedKokoroTTSService skips KokoroTTSService.__init__ (it loads the model): pinned to Pipecat 1.16.
     import pipecat.services.kokoro.tts as kokoro_tts
     from services import SharedKokoroTTSService
     monkeypatch.setattr(kokoro_tts, "Kokoro", FakeKokoro)

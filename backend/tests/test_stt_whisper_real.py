@@ -55,4 +55,5 @@ def test_a_kokoro_nova_passes_the_wake_phrase_match():
         pass
 
     w = make_wake(CFG.wake_phrases, 10, send)  # matched as Pipecat's gate does: punctuation stripped, then its patterns
-    assert any(p.search(w._strip_punctuation(text)) for p in w._patterns), f"whisper-base heard: {text!r}"
+    # Pipecat 1.16 keeps (phrase, pattern) pairs
+    assert any(p.search(w._strip_punctuation(text)) for _, p in w._patterns), f"whisper-base heard: {text!r}"

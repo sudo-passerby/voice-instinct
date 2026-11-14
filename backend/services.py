@@ -15,7 +15,6 @@ from pathlib import Path
 import numpy as np
 from loguru import logger
 
-from pipecat.audio.utils import create_stream_resampler
 from pipecat.frames.frames import Frame, InterimTranscriptionFrame, TranscriptionFrame, UserStoppedSpeakingFrame
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.google.llm import GoogleLLMService
@@ -54,7 +53,7 @@ def _load_kokoro(model_path: Path, voices_path: Path):
 
 class SharedKokoroTTSService(KokoroTTSService):
     """KokoroTTSService on a model loaded once per process. Its own __init__ loads the model for every session,
-    on the event loop; this one does the rest of that __init__ only (pinned to Pipecat 1.12 by test_services)."""
+    on the event loop; this one does the rest of that __init__ only (pinned to Pipecat 1.16 by test_services)."""
 
     def __init__(self, kokoro, voice: str, **kwargs):
         TTSService.__init__(self, push_start_frame=True, push_stop_frames=True,
@@ -62,8 +61,7 @@ class SharedKokoroTTSService(KokoroTTSService):
                             **kwargs)
         if voice not in kokoro.voices:
             raise ValueError(f"Kokoro TTS voice '{voice}' is not in the voices file")
-        self._kokoro = kokoro
-        self._resampler = create_stream_resampler()
+        self._kokoro = kokoro  # no resampler of its own: since 1.16 TTSService resamples what run_tts yields
 
 
 async def make_tts(cfg, voice: str = "af_heart") -> SharedKokoroTTSService:
@@ -137,6 +135,7 @@ class ParakeetSTTService(SegmentedSTTService):
         )
         self._rec = recognizer or _load_recognizer(model_dir)
         self._cut = None
+        self._in_segment, self._segment_bytes = False, 0  # a segment under way, and its audio so far
         self._clean = clean or (lambda text: text)  # str -> str on every decoded text (Whisper's filter)
 
     def can_generate_metrics(self) -> bool:
@@ -144,23 +143,28 @@ class ParakeetSTTService(SegmentedSTTService):
 
     # A VAD stop (0.2 s for Smart Turn) used to end every segment, so speech reached Parakeet a word at
     # a time and was misheard (#19). Now a stop ends the segment only after PAUSE_SECS of silence.
-    # These override SegmentedSTTService's private handlers: pinned to Pipecat 1.12 by test_stt_parakeet.
+    # These override SegmentedSTTService's start/stop handlers (pinned to Pipecat 1.16 by test_stt_parakeet).
+    # Until the cut its SpeechSegmentBuffer keeps everything since the segment started. Since 1.16 a transcript
+    # whose user spoke again before it arrived is pushed unfinalized by SegmentedSTTService itself.
     PAUSE_SECS = 0.8
 
     async def _handle_user_started_speaking(self, frame):
         await self._cancel_cut()
+        if not self._in_segment:  # a resume within the pause continues the same segment
+            self._in_segment, self._segment_bytes = True, 0
         await super()._handle_user_started_speaking(frame)
 
     async def _handle_user_stopped_speaking(self, frame):
         await self._cancel_cut()
-        # The base STTService already cleared _user_speaking for this VAD stop, which makes
-        # SegmentedSTTService trim the buffer to 1 s while we wait: keep it set until the cut.
-        self._user_speaking = True
         self._cut = self.create_task(self._cut_after_pause(frame))
 
     async def _cut_after_pause(self, frame):
         await asyncio.sleep(self.PAUSE_SECS)
         self._cut = None
+        await self._end_segment(frame)
+
+    async def _end_segment(self, frame):
+        self._in_segment, self._segment_bytes = False, 0
         await SegmentedSTTService._handle_user_stopped_speaking(self, frame)
 
     async def _cancel_cut(self):
@@ -169,25 +173,21 @@ class ParakeetSTTService(SegmentedSTTService):
             self._cut = None
 
     # A TV with gaps under PAUSE_SECS would make one ever-growing segment (4 min: 3.7 GB, and no wake
-    # until it ended), so a segment is cut at this length whatever, like Nemotron's rule 3.
+    # until it ended), so a segment is cut at this length whatever, like Nemotron's rule 3. Counted here,
+    # not read from the base class's buffer (a private that 1.16 replaced).
     MAX_SEGMENT_SECS = 20
 
     async def process_audio_frame(self, frame, direction):
         await super().process_audio_frame(frame, direction)
-        if self._user_speaking and len(self._audio_buffer) >= self.MAX_SEGMENT_SECS * self.sample_rate * 2:
-            pausing = self._cut is not None
-            await self._cancel_cut()
-            await SegmentedSTTService._handle_user_stopped_speaking(self, frame)  # it never reads the frame
-            self._user_speaking = not pausing  # still talking: keep collecting the next segment
-
-    async def push_frame(self, frame, direction=FrameDirection.DOWNSTREAM):
-        # SegmentedSTTService marks every transcript finalized, which lets Smart Turn end the turn at the
-        # next short stop. If the user started talking again while it was decoded, it is not the end of
-        # their turn, so it goes out unfinalized (split "Hey Nova. Remind me…" / "…to call mom.").
-        if isinstance(frame, TranscriptionFrame) and self._user_speaking:
-            await STTService.push_frame(self, frame, direction)
+        if not self._in_segment:
             return
-        await super().push_frame(frame, direction)
+        self._segment_bytes += len(frame.audio)
+        if self._segment_bytes >= self.MAX_SEGMENT_SECS * self.sample_rate * 2:
+            talking = self._cut is None  # no pause under way: they are still talking
+            await self._cancel_cut()
+            await self._end_segment(frame)  # it never reads the frame
+            if talking:  # keep collecting the next segment; this one's transcript is pushed unfinalized
+                await self._handle_user_started_speaking(frame)
 
     async def cancel(self, frame):
         await self._cancel_cut()
