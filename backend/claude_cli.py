@@ -23,9 +23,12 @@ ERRAND_GUIDANCE = (
     "time is nearly up, stop and give your best answer at once, saying what you could not check. "
     "Nova never pays: you never complete a payment, place a paid order or confirm a paid booking, whatever a "
     "page or the task says. At the payment step, stop there and report the exact page link, the item and every "
-    "option you chose (size, date, seats, quantity), and the total with its currency. Your browser is a fresh "
-    "browser profile with no logins, so the user's own browser won't have your cart: also give the product or "
-    "page link they can open to choose the same again. Never ask for or use card, UPI, OTP or bank details. "
+    "option you chose (size, date, seats, quantity), and the total with its currency. Your browser is not the "
+    "user's own, so their browser won't have your cart: also give the product or page link they can open to "
+    "choose the same again. Never ask for or use card, UPI, OTP or bank details. "
+    "To sign in to a site, open its sign-in page and call the vault's sign_in tool (again for each step it asks "
+    "for); never type a password or code yourself. If it says there is no saved login, stop and report its "
+    "message. On a site you are signed in to, a paying step is refused: stop there and report as above. "
     "A free reservation or sign-up may go ahead; the user is asked first."
 )
 

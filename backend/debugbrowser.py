@@ -1,7 +1,8 @@
-"""Debug mode's errand browser (#17): launched by us, so every step can be screenshotted over CDP.
+"""The errand browser we launch ourselves, so we can reach it over CDP: debug mode's screenshots (#17) and the
+vault's sign-in (vault.py). Playwright MCP attaches to it with --cdp-endpoint (autonomy.browser_mcp).
 
-The installer's headless Chromium with a fresh profile per run, like --isolated: it starts empty and
-is never signed in. Playwright MCP attaches to it with --cdp-endpoint (autonomy.browser_mcp).
+The installer's headless Chromium. Debug mode alone gives it a fresh profile per run, like --isolated: it starts
+empty and is never signed in. The vault gives it the shared profile that stays signed in.
 """
 
 import asyncio
@@ -33,8 +34,8 @@ def headless_shell(home):
 
 
 class Browser:
-    def __init__(self, proc, profile):
-        self.proc, self.profile, self.port = proc, profile, None
+    def __init__(self, proc, profile, keep=False):
+        self.proc, self.profile, self.port, self.keep = proc, profile, None, keep
 
     @property
     def endpoint(self):
@@ -46,12 +47,17 @@ class Browser:
         except ProcessLookupError:
             pass
         await self.proc.wait()
-        shutil.rmtree(self.profile, ignore_errors=True)
+        if not self.keep:  # the vault's signed-in profile stays
+            shutil.rmtree(self.profile, ignore_errors=True)
 
 
-async def launch(exe, timeout=10, hide_env=()):
-    """hide_env: the front model's key name (config [model] api_key_env), whatever it is called."""
-    profile = tempfile.mkdtemp(prefix="vi-browser-")
+async def launch(exe, timeout=10, hide_env=(), profile=None):
+    """hide_env: the front model's key name (config [model] api_key_env), whatever it is called. profile: a
+    profile folder to keep (the vault's); None for a fresh one, deleted on close."""
+    keep = profile is not None
+    profile = str(profile) if keep else tempfile.mkdtemp(prefix="vi-browser-")
+    port_file = Path(profile) / "DevToolsActivePort"  # Chromium writes its chosen port here
+    port_file.unlink(missing_ok=True)  # a kept profile has the last run's
     try:
         proc = await asyncio.create_subprocess_exec(
             str(exe), f"--user-data-dir={profile}", "--remote-debugging-port=0", *_SWITCHES,
@@ -60,10 +66,10 @@ async def launch(exe, timeout=10, hide_env=()):
             env=_agent_env(("TELEGRAM_CHAT_ID", *hide_env)),
             start_new_session=True)
     except BaseException:
-        shutil.rmtree(profile, ignore_errors=True)
+        if not keep:
+            shutil.rmtree(profile, ignore_errors=True)
         raise
-    browser = Browser(proc, profile)
-    port_file = Path(profile) / "DevToolsActivePort"  # Chromium writes its chosen port here
+    browser = Browser(proc, profile, keep)
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
     try:

@@ -121,7 +121,8 @@ def sandbox_settings(home, app_dir, data_dir, hook_port=7860, errand=True, grant
     the Edit deny stays."""
     home, app_dir, data_dir = Path(home), Path(app_dir), Path(data_dir)
     # Memory (memory.py): errands grep it but never change it, and never read the raw journal of conversations.
-    dirs = [home / d for d in _SECRET_DIRS] + [data_dir / "runs"] + ([data_dir / "memory/journal"] if errand else [])
+    # browser-profile: the vault's signed-in browser (vault.py), its cookies are logins.
+    dirs = [home / d for d in _SECRET_DIRS] + [data_dir / "runs", data_dir / "browser-profile"] + ([data_dir / "memory/journal"] if errand else [])
     files = [home / f for f in _SECRET_FILES] + [
         app_dir / ".env", data_dir / "hook-token", data_dir / "harness.db", data_dir / "folders.json",
         data_dir / "harness.db-wal", data_dir / "harness.db-shm"]  # WAL mode keeps recent writes here
@@ -169,6 +170,8 @@ def sandbox_settings(home, app_dir, data_dir, hook_port=7860, errand=True, grant
         fs["denyWrite"] += gr["denyWrite"]
         if gr["allowWrite"]:
             fs["allowWrite"] = gr["allowWrite"]
+    if errand:  # the vault asks the user itself (vault.py): no second, generic question
+        s["permissions"].setdefault("allow", []).append("mcp__vault__sign_in")
     return s
 
 

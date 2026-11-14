@@ -1,12 +1,14 @@
 """LLM tool: hand real work to the backend agent as a tracked, background Claude session."""
 
 import asyncio
+import json
 import re
 import uuid
 from pathlib import Path
 
 from loguru import logger
 
+from autonomy import browser_mcp
 from claude_cli import BackendResult
 from config import REPO_ROOT
 from confirm import last_user_text
@@ -70,8 +72,10 @@ def errand_lock():
 
 
 def make_tools(backend, registry, settings_for, on_finish=None, workspace_root=None, home=None, steps=None,
-               budget=None, memory=None, lock=None, bridge=None, folders=None):
-    """bridge asks the user for a folder (folders.py); without one, only the private workspace can be used."""
+               budget=None, memory=None, lock=None, bridge=None, folders=None, vault=None, vault_mcp=None):
+    """bridge asks the user for a folder (folders.py); without one, only the private workspace can be used.
+    vault (vault.py): the signed-in errand browser and its sign_in tool; vault_mcp(mcp_json, sid) adds that tool to
+    the run's --mcp-config."""
     home = Path(home) if home else Path.home()
     workspace_root = Path(workspace_root) if workspace_root else home / ".voice-instinct" / "workspace"
     state = lock if lock is not None else errand_lock()
@@ -229,11 +233,16 @@ def make_tools(backend, registry, settings_for, on_finish=None, workspace_root=N
                     extra["snapshot_dir_made"] = False  # its Edit deny stays; the sandbox's write deny can't
                 if bridge and made:  # the only folder whose snapshots the guard reads for this run (hooks.py)
                     bridge.register_run(sid, wd)
-                if steps:  # debug mode: a browser of our own and every step recorded (steps.py)
-                    mcp = await steps.start(sid, str(wd))
+                browser = await vault.open(sid) if vault else None  # the signed-in browser (vault.py)
+                if steps:  # debug mode: every step recorded, in the vault's browser or one of its own (steps.py)
+                    mcp = await steps.start(sid, str(wd), browser=browser)
                     settings = settings_for(sid, str(wd), **extra)
                 else:
                     settings = settings_for(sid, **extra)
+                    if browser and (servers := browser_mcp(home, cdp_endpoint=browser.endpoint)):
+                        mcp = json.dumps(servers)
+                if browser and mcp and vault_mcp:
+                    mcp = vault_mcp(mcp, sid)
                 res = await backend.run(task + _folder_note(grant, home), session_id=sid, resume=resume,
                                         settings=settings, cwd=str(wd), mcp_config=mcp)
             except asyncio.CancelledError:  # the session ended (orb quit, backend restart) mid-errand
@@ -246,6 +255,10 @@ def make_tools(backend, registry, settings_for, on_finish=None, workspace_root=N
             finally:
                 if settings:  # holds the hook token: do not leave it lying around
                     Path(settings).unlink(missing_ok=True)
+                if vault:  # its browser, and the run's MCP file (it holds the hook token)
+                    await vault.close(sid)
+                    if mcp and not mcp.lstrip().startswith("{"):
+                        Path(mcp).unlink(missing_ok=True)
                 if steps:  # kills the debug browser and ends the record, cancelled or not
                     try:
                         await steps.finish(sid, "aborted" if res is None else "stopped" if res.stopped

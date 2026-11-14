@@ -82,14 +82,27 @@ nor change that file.
   folder you let it change), and fail closed if the sandbox is unavailable.
 - Your secrets (`~/.ssh`, cloud credentials, this app's keys and database) are off limits to the agent,
   and the front model's API key is removed from the agent's environment.
-- The agent browses in its own headless browser that starts empty for every errand and is never
-  signed in to your accounts. It gets none of your other Claude Code tools or connectors.
+- The agent browses in its own headless browser, never your own browser or its logins. It gets none of your
+  other Claude Code tools or connectors.
+- The vault: Nova can sign in to sites for you, like Instinct's Vault. Add a login from a terminal (it's
+  never said aloud): `cd backend && uv run python vault.py add amazon.in` (also `list` and `remove <site>`).
+  It asks for the username, the password and, optionally, the authenticator secret behind the site's 2FA QR
+  code, so Nova can make the 6-digit codes. Logins live in your system keyring (`secret-tool`). When an errand
+  reaches a sign-in page it calls `sign_in`, Nova asks you once per site per errand, and the backend fills
+  and submits the form itself: the agent never sees the password. A login is filled only on an https page
+  of the site it was saved for. Page snapshots show a typed password, so it is cleared from the page before
+  the agent looks again. Errands share one browser profile that stays signed in
+  (`~/.voice-instinct/browser-profile`, which the agent can't read). Codes sent by text or email aren't
+  supported yet: the errand stops and says so.
 - Nova never pays. Errands are told never to complete a payment, place a paid order or confirm a paid
   booking: at the payment step the errand stops and reports the page link, what it chose and the total, and
   Nova tells you it's ready for you to finish and offers to send the link to your Telegram. The errand
-  browser is a fresh profile, so your own browser won't have its cart: you get the product or page link and
+  browser isn't your own, so your browser won't have its cart: you get the product or page link and
   the choices to pick again. Behind that instruction:
-  - The errand browser has no logins and no saved cards or addresses (a fresh, empty profile every errand).
+  - The errand browser is signed in only to the sites you saved in the vault. On those sites a paying step
+    (any of the words below, or accepting a pop-up) is refused outright, never asked, since the site may have a
+    saved card; only a cancellation ("Cancel subscription") is still asked. Paying with one-time cards
+    approved on your phone (Stripe Link, and UPI) comes later.
   - It cannot reach the main payment gateways and hosted checkouts: Razorpay, PayU, Paytm's gateway,
     CCAvenue, BillDesk, Juspay, Cashfree, PhonePe, Easebuzz, Instamojo, Stripe, PayPal, Adyen, Braintree,
     Checkout.com, Worldpay, Google Pay and Amazon Pay (the list is `PAYMENT_HOSTS` in `backend/autonomy.py`).
