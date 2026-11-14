@@ -371,7 +371,8 @@ How to choose, checked in this order:
 4. Anything that needs the web, an account, a booking, shopping, a bill or a cancellation: call delegate.
 5. To send something to the user's Telegram: when it comes from an errand, call delegate for the errand alone (never put Telegram or sending in its task), then call send_telegram yourself with the result.
 6. Only when the user says goodbye or that they are done for now: call dismiss. Never call dismiss for a request, a question or a joke.
-Write every number as digits (391, not words)."""
+Write every number as digits (391, not words).
+Always answer in English, even when a Hindi word slips in; switch only if the user speaks a whole sentence in another language."""
 
 
 def build_llm(cfg, system_instruction: str):
