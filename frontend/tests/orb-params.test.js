@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { level, follow, look } = require("../renderer/orb-params.js");
+const { level, follow, look, ignite, IGNITE_S, COLLAPSE_S } = require("../renderer/orb-params.js");
 
 // An AnalyserNode's time-domain bytes: 128 is silence, a sine of amplitude `a` (0..1) swings around it.
 const wave = (a, n = 512) => Uint8Array.from({ length: n }, (_, i) => 128 + Math.round(127 * a * Math.sin(i / 3)));
@@ -52,4 +52,30 @@ test("a muted orb must not look like it listens, but still shows Nova speaking",
   assert.equal(s.source, "bot");
   assert.ok(s.flow > 0);
   assert.equal(look("listening", false).muted, 0);
+});
+
+test("resting is small and still: no shells travel, no voice drives it", () => {
+  const r = look("resting", false, { running: 1, asking: false });
+  assert.deepEqual([r.rest, r.flow, r.orbit, r.source], [1, 0, 0, null]);
+  for (const m of ["listening", "thinking", "speaking", "offline"]) assert.equal(look(m, false).rest, 0, m);
+});
+
+test("one body per running errand, three at most; a waiting question always has a body to park", () => {
+  const bodies = (running, asking) => look("listening", false, { running, asking }).bodies;
+  assert.deepEqual([bodies(0, false), bodies(1, false), bodies(2, false), bodies(7, false)], [0, 1, 2, 3]);
+  assert.equal(bodies(0, true), 1);
+  assert.equal(look("listening", false).bodies, 0); // no errand news yet
+  assert.deepEqual([look("resting", false, { running: 1, asking: true }).ask, look("speaking", false, { running: 1, asking: false }).ask], [1, 0]);
+  assert.equal(look("offline", false, { running: 2, asking: true }).bodies, 0); // not connected: nothing is known
+});
+
+test("the wake ignition opens in about a quarter second and the sleep collapse is quicker", () => {
+  let x = 0, t = 0;
+  while (x < 1) { x = ignite(x, true, 1 / 60); t += 1 / 60; }
+  assert.equal(x, 1);
+  assert.ok(Math.abs(t - IGNITE_S) < 0.03, `opens in ${t}`);
+  for (t = 0; x > 0; t += 1 / 60) x = ignite(x, false, 1 / 60);
+  assert.equal(x, 0);
+  assert.ok(Math.abs(t - COLLAPSE_S) < 0.03 && COLLAPSE_S < IGNITE_S, `closes in ${t}`);
+  assert.equal(ignite(0.5, true, 10), 1); // a long frame gap never overshoots
 });

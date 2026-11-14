@@ -20,6 +20,8 @@ osc.start();
 const tone = meter(ctx, out.stream.getAudioTracks()[0]);
 window.toneLevel = () => tone.level();
 
+const one = { running: 1, asking: false }, two = { running: 2, asking: false }, ask = { running: 1, asking: true };
+// [label, mode, muted, level source, errands, script(orb) run once for cells that change over time]
 const cells = [
   ["listening", "listening", false, voice],
   ["thinking", "thinking", false, voice],
@@ -27,13 +29,28 @@ const cells = [
   ["offline", "offline", false, voice],
   ["muted", "listening", true, voice],
   ["speaking (metered tone)", "speaking", false, () => tone.level()],
+  ["listening, 2 errands", "listening", false, voice, two],
+  ["thinking, 1 errand", "thinking", false, voice, one],
+  ["speaking, 2 errands", "speaking", false, voice, two],
+  ["question waiting", "listening", false, voice, ask],
+  ["resting, 1 errand", "resting", false, voice, one],
+  ["resting, question waiting", "resting", false, voice, ask],
+  ["resting, muted", "resting", true, voice, two],
+  // wake, talk, sleep to resting, the errand ends, hidden: every 6 s
+  ["wake / rest / sleep loop", "hidden", false, voice, null, (orb) => {
+    const steps = [[0, "listening", one], [1500, "speaking", one], [2800, "resting", one], [4200, "resting", { running: 0, asking: false }], [5400, "hidden", null]];
+    const run = () => { for (const [at, mode, e] of steps) setTimeout(() => orb.set(mode, false, e), at); };
+    run();
+    setInterval(run, 6000);
+  }],
 ];
-for (const [label, mode, muted, src] of cells) {
+for (const [label, mode, muted, src, errands = null, script] of cells) {
   const fig = document.createElement("figure"), canvas = document.createElement("canvas");
   canvas.style.width = canvas.style.height = `${size}px`;
   fig.append(canvas, label);
   document.body.append(fig);
   const orb = createOrb(canvas, src);
-  orb.set(mode, muted);
-  if (freeze) setTimeout(() => orb.set("hidden", muted), freeze * 1000);
+  orb.set(mode, muted, errands);
+  if (script) script(orb);
 }
+if (freeze) setTimeout(() => { window.requestAnimationFrame = () => 0; }, freeze * 1000); // every orb holds its frame

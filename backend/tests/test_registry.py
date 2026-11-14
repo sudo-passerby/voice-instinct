@@ -178,3 +178,38 @@ def test_a_database_from_before_the_reminder_anchor_gains_it(tmp_path):
     reg = Registry(db)
     assert reg.get_reminder(1)["anchor"] is None  # reminders.next_due then counts from its due time
     assert reg.get_reminder(reg.add_reminder("tea", 200, "daily"))["anchor"] == 200
+
+
+def test_errand_status_counts_only_novas_own_errands_in_flight():
+    r, _ = make()
+    r.upsert_session("e1", origin="delegated", state="running")
+    r.upsert_session("e2", origin="delegated", state="waiting_input")  # held up by a question: still in flight
+    r.upsert_session("e3", origin="delegated", state="idle")
+    r.upsert_session("e4", origin="delegated", state="ended")
+    r.upsert_session("mine", state="running")  # the user's own Claude Code: not an errand, the orb stays hidden
+    r.upsert_session("nova-folders", origin="nova", state="running")
+    assert r.errand_status() == {"type": "errands", "running": 2, "asking": False}
+
+
+def test_errand_status_says_a_question_waits_until_it_is_answered():
+    r, _ = make()
+    r.upsert_session("nova-folders", origin="nova", state="idle")
+    q = r.add_question("nova-folders", "folder", "use ~/Documents")
+    assert r.errand_status() == {"type": "errands", "running": 0, "asking": True}
+    r.resolve_question(q, "answered", "allow")
+    assert r.errand_status()["asking"] is False
+
+
+def test_listeners_hear_every_change_to_sessions_and_questions():
+    r, _ = make()
+    heard = []
+    r.listeners.append(lambda: heard.append(r.errand_status()))
+    r.upsert_session("e1", origin="delegated", state="running")
+    q = r.add_question("e1", "permission", "run a command")
+    r.set_state("e1", "waiting_input")
+    r.resolve_question(q, "answered", "allow")
+    r.set_state("e1", "idle")
+    q2 = r.add_question("e1", "permission", "another")
+    r.expire_open()
+    assert [(h["running"], h["asking"]) for h in heard] == [
+        (1, False), (1, True), (1, True), (1, False), (0, False), (0, True), (0, False)]

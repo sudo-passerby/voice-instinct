@@ -5,6 +5,7 @@ import { SmallWebRTCTransport, WavMediaManager } from "@pipecat-ai/small-webrtc-
 const { initial, reduce, statusLine } = require("./state.js");
 const { makeReconnector, makeWatchdog } = require("./reconnect.js");
 const { createOrb, meter } = require("./orb.js");
+const { COLLAPSE_S } = require("./orb-params.js");
 
 const backend = new URLSearchParams(location.search).get("backend") || "http://127.0.0.1:7860";
 let state = initial();
@@ -13,15 +14,23 @@ let muted = false; // owned by the tray in main.js; re-applied after every conne
 const meters = {}; // mic, bot: loudness of the two audio tracks
 // The canvas is the drag handle (index.html). Drawn from our state machine and the two meters.
 const orb = createOrb(document.getElementById("orb"), (who) => meters[who]?.level() ?? 0);
-const render = () => orb.set(state.mode, muted);
+const render = () => orb.set(state.mode, muted, state); // state carries the errand news (running, asking)
+const still = matchMedia("(prefers-reduced-motion: reduce)");
 
 let micError = null; // set by a device error, cleared once our mic track really starts
 let backendUp = false; // after a failed connect: does the backend itself answer?
 let lastLine = null;
-function dispatch(type) {
+let hiding = 0;
+function dispatch(event) {
   const before = state;
-  state = reduce(state, { type });
-  if (state.visible !== before.visible) window.vi.setVisible(state.visible);
+  state = reduce(state, typeof event === "string" ? { type: event } : event);
+  if (state.visible !== before.visible) {
+    clearTimeout(hiding);
+    if (state.visible) window.vi.setVisible(true);
+    // The window goes once the orb has closed (orb.js); shown again meanwhile, it stays.
+    else hiding = setTimeout(() => window.vi.setVisible(false), still.matches ? 0 : COLLAPSE_S * 1000 + 40);
+  }
+  if (state.running !== before.running || state.asking !== before.asking) window.vi.setErrands(state.running, state.asking); // the tray says it too
   const line = statusLine(state.connected, micError, backendUp);
   if (line !== lastLine) window.vi.setStatus((lastLine = line)); // a rebuilt tray menu closes if open
   render();
@@ -33,7 +42,14 @@ const client = new PipecatClient({ transport: new SmallWebRTCTransport({ mediaMa
 client.on(RTVIEvent.Connected, () => { backendUp = false; dispatch("connected"); if (client.isMicEnabled !== !muted) client.enableMic(!muted); });
 client.on(RTVIEvent.BotReady, () => { if (state.visible) client.sendClientMessage("wake"); }); // shown before it connected
 client.on(RTVIEvent.Disconnected, () => { dispatch("disconnected"); reconnector.trigger(); });
-client.on(RTVIEvent.ServerMessage, (msg) => { if (msg && (msg.type === "wake" || msg.type === "sleep")) dispatch(msg.type); });
+const SETTLE_MS = 1500; // a resting orb outlives its last errand by this, so the body is seen falling into the star
+client.on(RTVIEvent.ServerMessage, (msg) => {
+  if (msg && (msg.type === "wake" || msg.type === "sleep")) dispatch(msg.type);
+  if (msg && msg.type === "errands") { // backend/gui.py: errands in flight, and whether a question waits
+    dispatch({ type: "errands", running: msg.running, asking: msg.asking });
+    setTimeout(() => dispatch("settle"), SETTLE_MS); // hides a resting orb with nothing left to show; otherwise nothing
+  }
+});
 client.on(RTVIEvent.DeviceError, (err) => { micError = err?.type || "unknown"; dispatch("device-error"); });
 // Our code plays the bot's audio (nothing else does: the transport only plays the WebRTC remote track
 // if an element is attached, and WavMediaManager's player is fed by bufferBotAudio, which SmallWebRTC

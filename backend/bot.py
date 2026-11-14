@@ -24,7 +24,7 @@ from confirm import name_words
 from debugbrowser import launch as launch_debug_browser
 from delegate import errand_lock, make_tools
 from folders import Folders, make_folder_tools
-from gui import make_gui_router
+from gui import ErrandFeed, make_gui_router
 from guard import refuse_other_origins
 from hooks import HookBridge, hide_hook_tokens, load_token, make_router, write_run_settings
 from pipecat.audio.vad.silero import SileroVADAnalyzer
@@ -192,6 +192,7 @@ async def bot(runner_args: RunnerArguments):
         if "worker" in holder:
             await holder["worker"].rtvi.send_server_message(msg)
 
+    errands = ErrandFeed(registry, send_gui)  # the orb shows running errands and a waiting question (gui.py)
     wake = make_wake(cfg.wake_phrases, cfg.awake_timeout, send_gui,
                      hold=lambda: relay.holds_awake)  # the window restarts when Nova finishes speaking
     stt = make_stt(cfg)
@@ -277,6 +278,11 @@ async def bot(runner_args: RunnerArguments):
     async def on_client_disconnected(transport, client):
         await runner.cancel()
 
+    @worker.rtvi.event_handler("on_client_ready")  # documented RTVI event: the orb can take messages now
+    async def on_client_ready(rtvi):
+        errands.start()
+        await errands.push(force=True)
+
     @worker.rtvi.event_handler("on_client_message")
     async def on_client_message(rtvi, msg):
         handle_client_message(wake, msg)  # documented RTVI client message, sent when the orb is shown
@@ -291,6 +297,7 @@ async def bot(runner_args: RunnerArguments):
     @worker.event_handler("on_pipeline_finished")
     async def on_pipeline_finished(worker, frame):
         save_conversation(registry, context)
+        errands.stop()
         relay.detach(worker)  # graceful and cancelled alike; never a newer session's relay
 
     sessions.add(runner)
