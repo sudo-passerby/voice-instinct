@@ -3,7 +3,7 @@ const { app, BrowserWindow, Tray, Menu, ipcMain, screen, session } = require("el
 const path = require("node:path");
 const fs = require("node:fs");
 const os = require("node:os");
-const { trayItems } = require("./tray.js");
+const { trayItems, trayIcon } = require("./tray.js");
 
 const BACKEND = "http://127.0.0.1:7860"; // the page's CSP allows only this backend
 const ORB_ORIGIN = "http://orb.invalid"; // same as backend/guard.py
@@ -123,10 +123,16 @@ app.whenReady().then(async () => {
     cb(permission === "media" && ours(wc) && micOnly(details?.mediaTypes)));
   session.defaultSession.setPermissionCheckHandler((wc, permission) => permission === "media" && ours(wc));
   createWindow();
-  tray = new Tray(path.join(__dirname, "icon.png"));
+  let icon = trayIcon({ status, muted });
+  tray = new Tray(path.join(__dirname, icon));
   const setMuted = (m) => { muted = m; win.webContents.send("mute", muted); refresh(); };
   const menu = () => Menu.buildFromTemplate(trayItems({ status, muted }, { toggle, setMuted, quit: () => app.quit() }));
-  const refresh = () => { tray.setToolTip(`voice-instinct: ${menu().items[0].label}`); tray.setContextMenu(menu()); };
+  const refresh = () => {
+    tray.setToolTip(`voice-instinct: ${menu().items[0].label}`);
+    tray.setContextMenu(menu());
+    const next = trayIcon({ status, muted });
+    if (next !== icon) tray.setImage(path.join(__dirname, (icon = next)));
+  };
   refresh();
   ipcMain.on("status", (_e, text) => { status = text; refresh(); });
   if (process.argv.includes("--toggle")) toggle();

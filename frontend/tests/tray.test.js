@@ -20,3 +20,16 @@ test("the first item is the status, and the status says when the mic is muted", 
   assert.deepEqual(items(false)[0], { label: "Connected", enabled: false });
   assert.equal(items(true)[0].label, "Connected, microphone muted");
 });
+
+const { trayIcon } = require("../tray.js");
+const fs = require("node:fs");
+const path = require("node:path");
+
+test("the tray icon follows the status: connected, muted, not connected (which wins over muted)", () => {
+  assert.equal(trayIcon({ status: "Connected", muted: false }), "icon.png");
+  assert.equal(trayIcon({ status: "Connected, but the microphone is unavailable (permissions)", muted: false }), "icon.png");
+  assert.equal(trayIcon({ status: "Connected", muted: true }), "icon-muted.png");
+  assert.equal(trayIcon({ status: "Not connected (is the backend running?)", muted: false }), "icon-offline.png");
+  assert.equal(trayIcon({ status: "Not connected (is the backend running?)", muted: true }), "icon-offline.png");
+  for (const f of ["icon.png", "icon-muted.png", "icon-offline.png"]) assert.ok(fs.existsSync(path.join(__dirname, "..", f)), f);
+});

@@ -5,19 +5,21 @@
   <meta http-equiv="Content-Security-Policy"
         content="default-src 'self'; script-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src http://127.0.0.1:7860 http://localhost:7860" />
   <style>
-    html, body, #root { margin: 0; height: 100%; width: 100%; background: transparent; overflow: hidden; }
-    #root { display: grid; place-items: center; }
-    /* Drag anywhere; on hover grow a little and glow. The mask feathers the canvas's jagged rim. */
-    .orb-wrap { border-radius: 50%; line-height: 0; -webkit-app-region: drag; cursor: grab;
-      transition: transform .25s ease, filter .25s ease; filter: drop-shadow(0 0 1.5px rgba(124,140,255,.45)); }
-    .orb-wrap:hover { transform: scale(1.06); filter: drop-shadow(0 0 7px rgba(150,165,255,.85)); }
-    .orb-wrap.muted { filter: grayscale(1) opacity(.55); }
-    .orb-wrap canvas { -webkit-mask-image: radial-gradient(circle closest-side, #000 96.5%, transparent 100%);
-      mask-image: radial-gradient(circle closest-side, #000 96.5%, transparent 100%); }
+    html, body { margin: 0; height: 100%; width: 100%; background: transparent; overflow: hidden; }
+    /* Drag anywhere; on hover grow a little. The shader keeps the disc inside the window with room for that. */
+    #orb { display: block; width: 100vmin; height: 100vmin; margin: auto; -webkit-app-region: drag; cursor: grab;
+      transition: transform .25s ease; }
+    #orb:hover { transform: scale(1.06); }
+    @media (prefers-reduced-motion: reduce) { #orb { transition: none; } }
+    /* No WebGL2 (orb.js adds .flat): a plain disc whose ring says the state, so Nova is never invisible. */
+    #orb.flat { box-sizing: border-box; border-radius: 50%; scale: .72; background: #07091a; border: 3px solid #dbe5ff; }
+    #orb.flat[data-mode="speaking"] { border-color: #ffb838; }
+    #orb.flat[data-mode="thinking"] { border-style: dotted; }
+    #orb.flat[data-mode="offline"], #orb.flat[data-mode="muted"] { border-color: #6b7080; border-style: dashed; }
   </style>
 </head>
 <body>
-  <div id="root"></div>
+  <canvas id="orb" role="img" aria-label="Nova"></canvas>
   <script src="bundle.js"></script>
 </body>
 </html>

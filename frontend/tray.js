@@ -10,4 +10,10 @@ function trayItems({ status, muted }, { toggle, setMuted, quit }) {
   ];
 }
 
-module.exports = { trayItems };
+// The tray icon says the same at a glance. Not connected wins over muted: Nova is not there at all.
+function trayIcon({ status, muted }) {
+  if (!status.startsWith("Connected")) return "icon-offline.png";
+  return muted ? "icon-muted.png" : "icon.png";
+}
+
+module.exports = { trayItems, trayIcon };

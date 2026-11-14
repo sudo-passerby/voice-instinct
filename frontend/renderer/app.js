@@ -1,17 +1,19 @@
 // Renderer: a Pipecat JS client over SmallWebRTC (documented path) driving the orb.
 import { LogLevel, PipecatClient, RTVIEvent, logger } from "@pipecat-ai/client-js";
 import { SmallWebRTCTransport, WavMediaManager } from "@pipecat-ai/small-webrtc-transport";
-import { createRoot } from "react-dom/client";
-import { Orb } from "orb-ui";
-import { createPipecatAdapter } from "orb-ui/adapters";
 
 const { initial, reduce, statusLine } = require("./state.js");
 const { makeReconnector, makeWatchdog } = require("./reconnect.js");
+const { createOrb, meter } = require("./orb.js");
 
 const backend = new URLSearchParams(location.search).get("backend") || "http://127.0.0.1:7860";
 let state = initial();
-const root = createRoot(document.getElementById("root"));
 let muted = false; // owned by the tray in main.js; re-applied after every connect
+
+const meters = {}; // mic, bot: loudness of the two audio tracks
+// The canvas is the drag handle (index.html). Drawn from our state machine and the two meters.
+const orb = createOrb(document.getElementById("orb"), (who) => meters[who]?.level() ?? 0);
+const render = () => orb.set(state.mode, muted);
 
 let micError = null; // set by a device error, cleared once our mic track really starts
 let backendUp = false; // after a failed connect: does the backend itself answer?
@@ -22,6 +24,7 @@ function dispatch(type) {
   if (state.visible !== before.visible) window.vi.setVisible(state.visible);
   const line = statusLine(state.connected, micError, backendUp);
   if (line !== lastLine) window.vi.setStatus((lastLine = line)); // a rebuilt tray menu closes if open
+  render();
 }
 
 // Shared by client-js and the transport; its default is DEBUG, which logs the bot's messages, replies included.
@@ -32,8 +35,22 @@ client.on(RTVIEvent.BotReady, () => { if (state.visible) client.sendClientMessag
 client.on(RTVIEvent.Disconnected, () => { dispatch("disconnected"); reconnector.trigger(); });
 client.on(RTVIEvent.ServerMessage, (msg) => { if (msg && (msg.type === "wake" || msg.type === "sleep")) dispatch(msg.type); });
 client.on(RTVIEvent.DeviceError, (err) => { micError = err?.type || "unknown"; dispatch("device-error"); });
+// Our code plays the bot's audio (nothing else does: the transport only plays the WebRTC remote track
+// if an element is attached, and WavMediaManager's player is fed by bufferBotAudio, which SmallWebRTC
+// never calls). The same two tracks are metered, so the orb moves with the real voices.
+const botAudio = new Audio(); // one element: a repeated trackStarted replaces the source, never adds a player
+botAudio.autoplay = true;
+const audioCtx = new AudioContext();
 client.on(RTVIEvent.TrackStarted, (track, participant) => {
-  if (participant?.local && track.kind === "audio" && micError) { micError = null; dispatch("mic-ok"); }
+  if (track.kind !== "audio") return;
+  const who = participant?.local ? "mic" : "bot"; // SmallWebRTC names only the local participant
+  if (who === "bot") {
+    botAudio.srcObject = new MediaStream([track]);
+    botAudio.play().catch(() => {});
+  } else if (micError) { micError = null; dispatch("mic-ok"); }
+  meters[who]?.stop();
+  meters[who] = meter(audioCtx, track);
+  audioCtx.resume().catch(() => {});
 });
 // A stalled session (media stopped without a Disconnected) is torn down so the reconnector takes over.
 // disconnect() emits no Disconnected when the peer is already gone, so trigger the reconnector here.
@@ -59,23 +76,15 @@ window.vi.onMute((m) => {
 });
 window.vi.setVisible(false); // a reloaded page starts hidden, so the window must too
 
-// The adapter drives the orb's look from RTVI events; our code owns connect/retry. adapter.start()
-// only marks "connecting" and calls our connect (it never reconnects by itself), so the reconnector
-// stays the single caller. The adapter plays the bot's audio (nothing else does: the transport only
-// plays the WebRTC remote track if an element is attached, and WavMediaManager's player is fed by
-// bufferBotAudio, which SmallWebRTC never calls).
-const botAudio = new Audio(); // one element: a repeated trackStarted replaces the source, never adds a player
-const adapter = createPipecatAdapter(client, {
-  createAudioElement: () => botAudio,
-  connect: async () => {
-    client.enableMic(!muted); // mic follows mute before any audio can flow
-    await client.connect({ webrtcRequestParams: { endpoint: `${backend}/api/offer` } });
-  },
-});
+// Our code owns connect/retry: the reconnector is the single caller of connect.
+const connect = async () => {
+  client.enableMic(!muted); // mic follows mute before any audio can flow
+  await client.connect({ webrtcRequestParams: { endpoint: `${backend}/api/offer` } });
+};
 const LIVE = ["authenticating", "connecting", "connected", "ready"]; // client-js refuses connect() in these
 const reconnector = makeReconnector(async () => {
   try {
-    await adapter.start();
+    await connect();
   } catch (e) {
     backendUp = await fetch(`${backend}/gui-config`).then((r) => r.ok, () => false);
     dispatch("connect-failed");
@@ -84,12 +93,3 @@ const reconnector = makeReconnector(async () => {
   reconnector.succeeded();
 }, setTimeout, { connecting: () => LIVE.includes(client.state) });
 reconnector.trigger();
-// The wrapper is the drag handle and carries the hover effect (index.html); 80vmin leaves room for both.
-function render() {
-  root.render(
-    <div className={muted ? "orb-wrap muted" : "orb-wrap"}>
-      <Orb adapter={adapter} theme="cloud" interactive={false} aria-label="voice-instinct" style={{ "--orb-ui-size": "80vmin" }} />
-    </div>
-  );
-}
-render();
