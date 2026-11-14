@@ -140,6 +140,7 @@ def make_tools(backend, registry, settings_for, on_finish=None, workspace_root=N
             errand: The id of the earlier errand this continues (same goal, a variation of it, or acting on its result); 0 for a different goal.
             access: What the errand may do in that folder: "read" (default), "write" (read and change, never delete), or "delete" only when the user's own words ask to delete something.
         """
+        telegram = _asked_for_telegram(params)  # now: the errand's questions add user turns ("yes") before its result
         if payment_details(task):  # before anything is made or run for it
             await params.result_callback({"status": "refused", "errand": errand, "result": NO_PAYMENT_DETAILS,
                                           "instruction": "Tell the user exactly this, in one short sentence."})
@@ -298,7 +299,7 @@ def make_tools(backend, registry, settings_for, on_finish=None, workspace_root=N
                         "table, and offer more details; answer follow-ups from this result, or call delegate "
                         "again with this errand id to continue it." + (
                             " The user asked for it on Telegram: call send_telegram now with the useful part of the "
-                            "result (the list, links and totals)." if _asked_for_telegram(params) else "")})
+                            "result (the list, links and totals)." if telegram else "")})
         finally:
             state["running"], state["sid"] = False, None
 

@@ -184,6 +184,7 @@ class ParakeetSTTService(SegmentedSTTService):
         if self._in_segment:
             await self._cancel_cut()
             await self._end_segment(None)  # the base class never reads the frame
+        self._stop_after = None
         if self._decoded >= self._ended:
             await self.push_frame(ProposedUserStoppedSpeakingFrame())
         else:
@@ -222,12 +223,14 @@ class ParakeetSTTService(SegmentedSTTService):
         return self._clean(stream.result.text.strip())
 
     async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame, None]:
-        self._decoded += 1
-        await self.start_processing_metrics()
-        text = await asyncio.to_thread(self._decode, audio)
-        await self.stop_processing_metrics()
-        if text:  # never logged: until the wake phrase this is whatever the room is saying
-            yield TranscriptionFrame(text, self._user_id, time_now_iso8601())
+        try:
+            await self.start_processing_metrics()
+            text = await asyncio.to_thread(self._decode, audio)
+            await self.stop_processing_metrics()
+            if text:  # never logged: until the wake phrase this is whatever the room is saying
+                yield TranscriptionFrame(text, self._user_id, time_now_iso8601())
+        finally:
+            self._decoded += 1  # after its transcript: a press while it decodes waits for it (end_turn)
         if self._stop_after is not None and self._decoded >= self._stop_after:
             self._stop_after = None
             yield ProposedUserStoppedSpeakingFrame()  # after the transcript, so the turn ends with it
@@ -292,6 +295,14 @@ class NemotronSTTService(STTService):
             await self.push_error(f"{self}: transcription failed: {error}", exception=error)
         for frame in out:  # yielded outside the lock: downstream must never wait on it
             yield frame
+
+    async def end_turn(self):
+        """Push-to-talk's second press (ptt.py): what was heard so far is the sentence, then the turn ends."""
+        async with self._lock:
+            final = self._final()
+        if final:
+            await self.push_frame(final)
+        await self.push_frame(ProposedUserStoppedSpeakingFrame())
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         if isinstance(frame, UserStoppedSpeakingFrame):

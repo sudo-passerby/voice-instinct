@@ -22,6 +22,7 @@ class FakeBackend:
                   mcp_config=None):
         self.calls.append({"task": task, "sid": session_id, "resume": resume, "settings": settings, "cwd": cwd,
                            "mcp_config": mcp_config})
+        getattr(self, "on_run", lambda: None)()  # what happens while the errand runs
         return self.results.pop(0)
 
 
@@ -574,3 +575,14 @@ def test_an_errand_id_sent_as_text_still_continues_that_errand():
     p, out = make_params()
     run(delegate(p, "apply to the second one", errand=str(first)))
     assert out[-1]["status"] == "done" and out[-1]["errand"] != first and b.calls[-1]["resume"] is True
+
+
+def test_the_telegram_ask_is_read_when_the_errand_starts_not_when_it_ends():
+    # The errand asks "may I sign in?" mid-run and the user says "yes": the result must still go to Telegram.
+    reg, b, delegate = setup([BackendResult("High Steak 4.6", "s1")])
+    p, out = make_params()
+    said = [{"role": "user", "content": "find restaurants and send me the list on Telegram"}]
+    p.context = SimpleNamespace(get_messages=lambda: list(said))
+    b.on_run = lambda: said.append({"role": "user", "content": "yes"})  # spoken while the errand runs
+    run(delegate(p, "find restaurants"))
+    assert "send_telegram now" in out[-1]["note"]

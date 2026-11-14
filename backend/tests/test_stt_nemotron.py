@@ -112,3 +112,21 @@ def test_make_stt_builds_nemotron_for_both_streaming_engines(tmp_path):
         (tmp_path / STT_MODELS[engine]).mkdir()
         stt = make_stt(Config(models_dir=str(tmp_path), stt_engine=engine), recognizer=FakeRecognizer([]))
         assert isinstance(stt, NemotronSTTService)
+
+
+def test_push_to_talks_second_press_sends_the_partial_then_proposes_the_end():
+    # Pressed within sherpa's 0.8 s endpoint: the words are still a partial, so they go first, then the stop.
+    from pipecat.frames.frames import ProposedUserStoppedSpeakingFrame
+    rec = FakeRecognizer([("find me a laptop", False)])
+    stt = NemotronSTTService(recognizer=rec)
+
+    async def go():
+        async def press():
+            await asyncio.sleep(0.05)
+            await stt.end_turn()
+        asyncio.get_running_loop().create_task(press())
+        return await run_test(stt, frames_to_send=[audio(), SleepFrame(sleep=0.2)])
+    down, _ = asyncio.run(go())
+    kinds = [type(f).__name__ for f in down if isinstance(f, (TranscriptionFrame, ProposedUserStoppedSpeakingFrame))]
+    assert kinds == ["TranscriptionFrame", "ProposedUserStoppedSpeakingFrame"]
+    assert next(f for f in down if isinstance(f, TranscriptionFrame)).text == "find me a laptop"
