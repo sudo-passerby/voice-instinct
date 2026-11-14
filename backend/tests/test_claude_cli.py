@@ -296,7 +296,8 @@ def test_a_stop_cancelled_again_during_the_grace_period_still_kills_the_group(tm
 def test_every_errand_stops_at_checkout_and_hands_over_what_the_user_needs_to_pay():
     from claude_cli import ERRAND_GUIDANCE as g
     for must in ("never complete a payment", "paid order", "paid booking", "stop", "exact page link", "total",
-                 "not the user's own", "sign_in", "never type a password", "paying step is refused"):
+                 "not the user's own", "sign_in", "never type a password", "paying step is refused",
+                 "never message the user yourself", "Nova sends it"):
         assert must in g, must
 
 
@@ -309,3 +310,10 @@ def test_the_front_model_hands_checkout_to_the_user():
     for must in ("never pay", "ready for them to finish", "send_telegram", "their own browser",
                  "card or UPI details", "free"):
         assert must in text, must
+
+
+def test_errands_run_on_the_model_config_names_not_the_users_default(tmp_path):
+    # The owner's Claude Code default is Opus; errands are to run on Sonnet or Haiku (2026-11-14).
+    cli = _script(tmp_path, 'printf \'{"type":"result","result":"%s"}\\n\' "$*"\n')
+    assert "--model sonnet" in asyncio.run(ClaudeCodeBackend(cmd=cli, model="sonnet").run("t")).text
+    assert "--model" not in asyncio.run(ClaudeCodeBackend(cmd=cli, model=None).run("t")).text

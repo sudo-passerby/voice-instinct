@@ -23,6 +23,7 @@ Check [SYSTEM_REQUIREMENTS.md](SYSTEM_REQUIREMENTS.md) first: Linux, about 8 GB 
 The commands below live in `~/.local/bin`; use the full path if that folder is not on your `PATH`.
 
 - `voice-instinct toggle` shows or hides the orb (bind it to a key; Sway example in docs/sway.md).
+- `voice-instinct talk` is push-to-talk: press once and speak (no wake phrase, pauses are fine), press again to send.
 - The tray menu shows the connection status, mutes the microphone and quits.
 - `voice-instinct quit` quits the orb on desktops without a tray.
 - Settings live in `config.toml` in the repo: the assistant's name, how long it stays awake, the

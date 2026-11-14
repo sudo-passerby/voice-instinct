@@ -9,7 +9,8 @@ Not affiliated with Instinct.
 ## What it does
 
 - It lives in the background. Say "Nova" (the name is configurable) and a floating orb appears, listens, thinks
-  and speaks, then hides again.
+  and speaks, then hides again. While an errand is running the orb stays up, small and dim, with a gold body
+  circling its star for each errand; when an errand has a question for you, the rim pulses gold.
 - You just talk to it. Speech-to-text (Nemotron streaming, Parakeet or Whisper) and text-to-speech (Kokoro) run locally,
   around a model of your choice: Gemini by default, or any OpenAI-compatible endpoint or Ollama.
 - Optional, with a supported GPU: `qwen3-asr-gpu` (Qwen3-ASR-1.7B) is the most accurate English speech-to-text and gets names you list right, at about 10 GB of disk, about 7.5 GB of RAM while running and about 0.45 s per command (see `[stt]` in `config.example.toml`).

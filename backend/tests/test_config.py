@@ -213,3 +213,10 @@ def test_agent_timeouts_that_are_not_numbers_fail_fast_with_a_clear_message(tmp_
     f.write_text(body)
     with pytest.raises(ValueError, match=rf"config.toml: \[agent\] {key} must be a number of seconds"):
         load(f)
+
+
+def test_errands_default_to_sonnet_and_take_haiku(tmp_path):
+    assert Config().agent_model == "sonnet"
+    p = tmp_path / "c.toml"
+    p.write_text('[agent]\nmodel = "haiku"\n')
+    assert load(p).agent_model == "haiku"

@@ -15,8 +15,8 @@ from pathlib import Path
 import numpy as np
 from loguru import logger
 
-from pipecat.audio.utils import create_stream_resampler
-from pipecat.frames.frames import Frame, InterimTranscriptionFrame, TranscriptionFrame, UserStoppedSpeakingFrame
+from pipecat.frames.frames import (Frame, InterimTranscriptionFrame, ProposedUserStoppedSpeakingFrame, TranscriptionFrame,
+                                   UserStoppedSpeakingFrame)
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.google.llm import GoogleLLMService
 from pipecat.services.kokoro.tts import KokoroTTSService
@@ -54,7 +54,7 @@ def _load_kokoro(model_path: Path, voices_path: Path):
 
 class SharedKokoroTTSService(KokoroTTSService):
     """KokoroTTSService on a model loaded once per process. Its own __init__ loads the model for every session,
-    on the event loop; this one does the rest of that __init__ only (pinned to Pipecat 1.12 by test_services)."""
+    on the event loop; this one does the rest of that __init__ only (pinned to Pipecat 1.16 by test_services)."""
 
     def __init__(self, kokoro, voice: str, **kwargs):
         TTSService.__init__(self, push_start_frame=True, push_stop_frames=True,
@@ -62,8 +62,7 @@ class SharedKokoroTTSService(KokoroTTSService):
                             **kwargs)
         if voice not in kokoro.voices:
             raise ValueError(f"Kokoro TTS voice '{voice}' is not in the voices file")
-        self._kokoro = kokoro
-        self._resampler = create_stream_resampler()
+        self._kokoro = kokoro  # no resampler of its own: since 1.16 TTSService resamples what run_tts yields
 
 
 async def make_tts(cfg, voice: str = "af_heart") -> SharedKokoroTTSService:
@@ -137,6 +136,9 @@ class ParakeetSTTService(SegmentedSTTService):
         )
         self._rec = recognizer or _load_recognizer(model_dir)
         self._cut = None
+        self._in_segment, self._segment_bytes = False, 0  # a segment under way, and its audio so far
+        self._ended = self._decoded = 0  # segments handed to the base class, and transcribed (in order)
+        self._stop_after = None  # push-to-talk: propose the turn's end once this many are transcribed
         self._clean = clean or (lambda text: text)  # str -> str on every decoded text (Whisper's filter)
 
     def can_generate_metrics(self) -> bool:
@@ -144,23 +146,31 @@ class ParakeetSTTService(SegmentedSTTService):
 
     # A VAD stop (0.2 s for Smart Turn) used to end every segment, so speech reached Parakeet a word at
     # a time and was misheard (#19). Now a stop ends the segment only after PAUSE_SECS of silence.
-    # These override SegmentedSTTService's private handlers: pinned to Pipecat 1.12 by test_stt_parakeet.
+    # These override SegmentedSTTService's start/stop handlers (pinned to Pipecat 1.16 by test_stt_parakeet).
+    # Until the cut its SpeechSegmentBuffer keeps everything since the segment started. Since 1.16 a transcript
+    # whose user spoke again before it arrived is pushed unfinalized by SegmentedSTTService itself.
     PAUSE_SECS = 0.8
 
     async def _handle_user_started_speaking(self, frame):
         await self._cancel_cut()
+        if not self._in_segment:  # a resume within the pause continues the same segment
+            self._in_segment, self._segment_bytes = True, 0
         await super()._handle_user_started_speaking(frame)
 
     async def _handle_user_stopped_speaking(self, frame):
+        if not self._in_segment:
+            return  # push-to-talk already ended this segment (end_turn)
         await self._cancel_cut()
-        # The base STTService already cleared _user_speaking for this VAD stop, which makes
-        # SegmentedSTTService trim the buffer to 1 s while we wait: keep it set until the cut.
-        self._user_speaking = True
         self._cut = self.create_task(self._cut_after_pause(frame))
 
     async def _cut_after_pause(self, frame):
         await asyncio.sleep(self.PAUSE_SECS)
         self._cut = None
+        await self._end_segment(frame)
+
+    async def _end_segment(self, frame):
+        self._in_segment, self._segment_bytes = False, 0
+        self._ended += 1
         await SegmentedSTTService._handle_user_stopped_speaking(self, frame)
 
     async def _cancel_cut(self):
@@ -168,26 +178,34 @@ class ParakeetSTTService(SegmentedSTTService):
             await self.cancel_task(self._cut)
             self._cut = None
 
+    async def end_turn(self):
+        """Push-to-talk's second press (ptt.py): transcribe what is buffered now, without waiting for the
+        pause, and propose the end of the user's turn right after that transcript."""
+        if self._in_segment:
+            await self._cancel_cut()
+            await self._end_segment(None)  # the base class never reads the frame
+        self._stop_after = None
+        if self._decoded >= self._ended:
+            await self.push_frame(ProposedUserStoppedSpeakingFrame())
+        else:
+            self._stop_after = self._ended
+
     # A TV with gaps under PAUSE_SECS would make one ever-growing segment (4 min: 3.7 GB, and no wake
-    # until it ended), so a segment is cut at this length whatever, like Nemotron's rule 3.
+    # until it ended), so a segment is cut at this length whatever, like Nemotron's rule 3. Counted here,
+    # not read from the base class's buffer (a private that 1.16 replaced).
     MAX_SEGMENT_SECS = 20
 
     async def process_audio_frame(self, frame, direction):
         await super().process_audio_frame(frame, direction)
-        if self._user_speaking and len(self._audio_buffer) >= self.MAX_SEGMENT_SECS * self.sample_rate * 2:
-            pausing = self._cut is not None
-            await self._cancel_cut()
-            await SegmentedSTTService._handle_user_stopped_speaking(self, frame)  # it never reads the frame
-            self._user_speaking = not pausing  # still talking: keep collecting the next segment
-
-    async def push_frame(self, frame, direction=FrameDirection.DOWNSTREAM):
-        # SegmentedSTTService marks every transcript finalized, which lets Smart Turn end the turn at the
-        # next short stop. If the user started talking again while it was decoded, it is not the end of
-        # their turn, so it goes out unfinalized (split "Hey Nova. Remind me…" / "…to call mom.").
-        if isinstance(frame, TranscriptionFrame) and self._user_speaking:
-            await STTService.push_frame(self, frame, direction)
+        if not self._in_segment:
             return
-        await super().push_frame(frame, direction)
+        self._segment_bytes += len(frame.audio)
+        if self._segment_bytes >= self.MAX_SEGMENT_SECS * self.sample_rate * 2:
+            talking = self._cut is None  # no pause under way: they are still talking
+            await self._cancel_cut()
+            await self._end_segment(frame)  # it never reads the frame
+            if talking:  # keep collecting the next segment; this one's transcript is pushed unfinalized
+                await self._handle_user_started_speaking(frame)
 
     async def cancel(self, frame):
         await self._cancel_cut()
@@ -205,11 +223,17 @@ class ParakeetSTTService(SegmentedSTTService):
         return self._clean(stream.result.text.strip())
 
     async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame, None]:
-        await self.start_processing_metrics()
-        text = await asyncio.to_thread(self._decode, audio)
-        await self.stop_processing_metrics()
-        if text:  # never logged: until the wake phrase this is whatever the room is saying
-            yield TranscriptionFrame(text, self._user_id, time_now_iso8601())
+        try:
+            await self.start_processing_metrics()
+            text = await asyncio.to_thread(self._decode, audio)
+            await self.stop_processing_metrics()
+            if text:  # never logged: until the wake phrase this is whatever the room is saying
+                yield TranscriptionFrame(text, self._user_id, time_now_iso8601())
+        finally:
+            self._decoded += 1  # after its transcript: a press while it decodes waits for it (end_turn)
+        if self._stop_after is not None and self._decoded >= self._stop_after:
+            self._stop_after = None
+            yield ProposedUserStoppedSpeakingFrame()  # after the transcript, so the turn ends with it
 
 
 class NemotronSTTService(STTService):
@@ -271,6 +295,14 @@ class NemotronSTTService(STTService):
             await self.push_error(f"{self}: transcription failed: {error}", exception=error)
         for frame in out:  # yielded outside the lock: downstream must never wait on it
             yield frame
+
+    async def end_turn(self):
+        """Push-to-talk's second press (ptt.py): what was heard so far is the sentence, then the turn ends."""
+        async with self._lock:
+            final = self._final()
+        if final:
+            await self.push_frame(final)
+        await self.push_frame(ProposedUserStoppedSpeakingFrame())
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         if isinstance(frame, UserStoppedSpeakingFrame):
@@ -360,6 +392,17 @@ def make_stt(cfg, recognizer=None):
                               language=Language.EN if cfg.stt_engine == "nemotron" else None)
 
 
+class LocalLLMService(OpenAILLMService):
+    """Ollama's /v1 ignores the "developer" role relay gives a due reminder or an errand's question (a small model
+    then acted on the user's last words instead): it gets them as "system", which it follows."""
+
+    def build_chat_completion_params(self, params_from_context):
+        params = super().build_chat_completion_params(params_from_context)
+        params["messages"] = [{**m, "role": "system"} if m.get("role") == "developer" else m
+                              for m in params["messages"]]
+        return params
+
+
 def build_llm(cfg, system_instruction: str):
     """Front LLM. Model and system prompt go through Settings (the documented 1.x way)."""
     key = os.environ.get(cfg.api_key_env, "ollama")
@@ -368,9 +411,13 @@ def build_llm(cfg, system_instruction: str):
             api_key=key,
             settings=GoogleLLMService.Settings(model=cfg.model, system_instruction=system_instruction),
         )
-    base = cfg.base_url or ("http://localhost:11434/v1" if cfg.provider == "ollama" else None)
-    return OpenAILLMService(
+    local = cfg.provider == "ollama"
+    base = cfg.base_url or ("http://localhost:11434/v1" if local else None)
+    return (LocalLLMService if local else OpenAILLMService)(
         api_key=key,
         base_url=base,
-        settings=OpenAILLMService.Settings(model=cfg.model, system_instruction=system_instruction),
+        # reasoning off: on Ollama's /v1 a thinking model otherwise reasons for seconds, or speaks its reasoning
+        settings=OpenAILLMService.Settings(
+            model=cfg.model, system_instruction=system_instruction,
+            extra={"reasoning_effort": "none"} if local else {}),
     )

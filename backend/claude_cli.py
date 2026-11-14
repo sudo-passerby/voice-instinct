@@ -29,7 +29,9 @@ ERRAND_GUIDANCE = (
     "To sign in to a site, open its sign-in page and call the vault's sign_in tool (again for each step it asks "
     "for); never type a password or code yourself. If it says there is no saved login, stop and report its "
     "message. On a site you are signed in to, a paying step is refused: stop there and report as above. "
-    "A free reservation or sign-up may go ahead; the user is asked first."
+    "A free reservation or sign-up may go ahead; the user is asked first. "
+    "You never message the user yourself (Telegram, WhatsApp, email, SMS), even if the task says to: give the "
+    "result in your answer, and Nova sends it to them."
 )
 
 
@@ -93,13 +95,15 @@ async def _end_group(proc, grace: float = 3.0) -> None:
 class ClaudeCodeBackend:
     def __init__(self, cmd: str = "claude", cwd: str | None = None, timeout: float = 120,
                  permission_mode: str | None = "acceptEdits", hide_env: Iterable[str] = (),
-                 mcp_config: str | None = None, system_prompt: str = ERRAND_GUIDANCE, about_user=None):
+                 mcp_config: str | None = None, system_prompt: str = ERRAND_GUIDANCE, about_user=None,
+                 model: str | None = None):
         # acceptEdits: file edits inside the task's own folder don't prompt; shell commands still do.
         self.cmd, self.cwd, self.timeout, self.permission_mode = cmd, cwd, timeout, permission_mode
         self.system_prompt = system_prompt
         self.about_user = about_user  # memory.prompt_block: the profile, read fresh for every run (#25)
         self.hide_env = tuple(hide_env)  # e.g. the front model's api_key_env, whatever it is called
         self.mcp_config = mcp_config  # the only MCP servers the agent gets (the errand browser)
+        self.model = model  # config [agent] model; None: the CLI's own default
         self._procs: dict[str, asyncio.subprocess.Process] = {}
         self._stopped: set[str] = set()
 
@@ -132,6 +136,8 @@ class ClaudeCodeBackend:
                 "--append-system-prompt", self.system_prompt + (self.about_user() if self.about_user else ""),
                 "--strict-mcp-config",  # none of the user's own MCP servers (their browsers, Slack, mail)
                 "--setting-sources", "project"]  # nor their ~/.claude settings, plugins or hooks
+        if self.model:
+            args += ["--model", self.model]
         mcp = mcp_config or self.mcp_config  # a debug run brings its own browser (steps.py)
         if mcp:
             args += ["--mcp-config", mcp]

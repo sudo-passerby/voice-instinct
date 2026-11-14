@@ -20,3 +20,43 @@ test("the first item is the status, and the status says when the mic is muted", 
   assert.deepEqual(items(false)[0], { label: "Connected", enabled: false });
   assert.equal(items(true)[0].label, "Connected, microphone muted");
 });
+
+const { trayIcon } = require("../tray.js");
+const fs = require("node:fs");
+const path = require("node:path");
+
+test("the tray icon follows the status: connected, muted, not connected (which wins over muted)", () => {
+  assert.equal(trayIcon({ status: "Connected", muted: false }), "icon.png");
+  assert.equal(trayIcon({ status: "Connected, but the microphone is unavailable (permissions)", muted: false }), "icon.png");
+  assert.equal(trayIcon({ status: "Connected", muted: true }), "icon-muted.png");
+  assert.equal(trayIcon({ status: "Not connected (is the backend running?)", muted: false }), "icon-offline.png");
+  assert.equal(trayIcon({ status: "Not connected (is the backend running?)", muted: true }), "icon-offline.png");
+  for (const f of ["icon.png", "icon-muted.png", "icon-offline.png"]) assert.ok(fs.existsSync(path.join(__dirname, "..", f)), f);
+});
+
+const { trayTooltip } = require("../tray.js");
+const none = { toggle() {}, setMuted() {}, quit() {} };
+
+test("the tray shows a running errand or a waiting question, after not connected and muted", () => {
+  const on = { status: "Connected", muted: false };
+  assert.equal(trayIcon({ ...on, running: 1 }), "icon-busy.png");
+  assert.equal(trayIcon({ ...on, running: 0, asking: true }), "icon-busy.png");
+  assert.equal(trayIcon({ ...on, running: 0, asking: false }), "icon.png");
+  assert.equal(trayIcon({ ...on, muted: true, running: 1 }), "icon-muted.png");
+  assert.equal(trayIcon({ status: "Not connected (is the backend running?)", muted: false, running: 1 }), "icon-offline.png");
+  assert.ok(fs.existsSync(path.join(__dirname, "..", "icon-busy.png")));
+});
+
+test("the status line counts the errands and says when a question waits", () => {
+  const label = (state) => trayItems({ status: "Connected", muted: false, ...state }, none)[0].label;
+  assert.equal(label({ running: 1 }), "Connected, 1 errand running");
+  assert.equal(label({ running: 2 }), "Connected, 2 errands running");
+  assert.equal(label({ running: 1, asking: true }), "Connected, 1 errand running, a question is waiting for you");
+  assert.equal(label({ running: 0, asking: true }), "Connected, a question is waiting for you");
+  assert.equal(trayItems({ status: "Connected", muted: true, running: 1 }, none)[0].label, "Connected, microphone muted, 1 errand running");
+});
+
+test("the tooltip says the assistant's name, not the program's", () => {
+  assert.equal(trayTooltip("Nova", { status: "Connected", muted: false }), "Nova: Connected");
+  assert.equal(trayTooltip("Juno", { status: "Connected", muted: true, running: 1 }), "Juno: Connected, microphone muted, 1 errand running");
+});

@@ -27,7 +27,7 @@ _SECTIONS = {
     "gui": {"size": "gui_size", "position": "gui_position"},
     "paths": {"workspace_dir": "workspace_dir", "backend_cwd": "backend_cwd"},  # data_dir, models_dir: load() refuses
     "agent": {"permission_mode": "permission_mode", "backend_timeout": "backend_timeout",
-              "permission_timeout": "permission_timeout"},
+              "permission_timeout": "permission_timeout", "model": "agent_model"},
     "debug": {"browser_steps": "debug_browser_steps"},
     "stt": {"engine": "stt_engine", "language": "stt_language", "keyterms": "stt_keyterms"},
 }
@@ -50,6 +50,7 @@ class Config:
     workspace_dir: str = "~/.voice-instinct/workspace"  # default folder for tasks that name none
     permission_timeout: float = 90
     permission_mode: str = "auto"  # Claude Code mode for delegated runs; the sandbox bounds what auto may do
+    agent_model: str = "sonnet"  # [agent] model: the Claude model errands run on (sonnet | haiku), not the CLI default
     debug_browser_steps: bool = False  # screenshot every errand browser step (steps.py)
     stt_engine: str = "nemotron"  # speech-to-text engine (services.make_stt); install.sh downloads only this one
     stt_language: str = "en"  # Whisper's language code ([stt] language)

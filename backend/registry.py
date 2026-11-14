@@ -46,6 +46,7 @@ _SESSION_FIELDS = ("name", "cwd", "origin", "mode", "state", "tmux_name")
 class Registry:
     def __init__(self, path=":memory:", clock=time.time):
         self.clock = clock
+        self.listeners = []  # called after every change to sessions or questions (gui.ErrandFeed tells the orb)
         if path != ":memory:":
             parent = Path(path).parent
             parent.mkdir(parents=True, exist_ok=True)
@@ -62,6 +63,18 @@ class Registry:
         if path != ":memory:":
             os.chmod(path, 0o600)
 
+    def _changed(self):
+        for listener in list(self.listeners):
+            listener()
+
+    def errand_status(self):
+        """What the orb shows: Nova's own errands in flight (one held up by a question still is), and whether any
+        question waits for the user. The user's own Claude Code sessions are not errands."""
+        running = self.db.execute("SELECT COUNT(*) FROM sessions WHERE origin='delegated' "
+                                  "AND state IN ('running', 'waiting_input')").fetchone()[0]
+        asking = self.db.execute("SELECT EXISTS(SELECT 1 FROM questions WHERE status='open')").fetchone()[0]
+        return {"type": "errands", "running": running, "asking": bool(asking)}
+
     def _one(self, sql, args=()):
         row = self.db.execute(sql, args).fetchone()
         return dict(row) if row else None
@@ -73,6 +86,7 @@ class Registry:
         if given:
             cols = ", ".join(f"{k}=?" for k in given)
             self.db.execute(f"UPDATE sessions SET {cols} WHERE id=?", (*given.values(), session_id))
+        self._changed()
 
     def get_session(self, session_id):
         return self._one("SELECT * FROM sessions WHERE id=?", (session_id,))
@@ -83,6 +97,7 @@ class Registry:
                             (state, self.clock(), end_reason, session_id))
         else:
             self.db.execute("UPDATE sessions SET state=? WHERE id=?", (state, session_id))
+        self._changed()
 
     def add_event(self, session_id, kind, payload):
         cur = self.db.execute(
@@ -134,6 +149,7 @@ class Registry:
         cur = self.db.execute(
             "INSERT INTO questions(session_id, kind, tool_name, tool_input_json, input_hash, prompt, asked_at) "
             "VALUES(?,?,?,?,?,?,?)", (session_id, kind, tool_name, blob, h, prompt, self.clock()))
+        self._changed()
         return cur.lastrowid
 
     def get_question(self, qid):
@@ -142,15 +158,18 @@ class Registry:
     def resolve_question(self, qid, status, answer=None):
         self.db.execute("UPDATE questions SET status=?, answer=?, answered_at=? WHERE id=?",
                         (status, answer, self.clock(), qid))
+        self._changed()
 
     def open_questions(self):
         return [dict(r) for r in self.db.execute(
             "SELECT * FROM questions WHERE status='open' ORDER BY id")]
 
     def expire_open(self):
-        return self.db.execute(
+        expired = self.db.execute(
             "UPDATE questions SET status='expired', answered_at=? WHERE status='open'",
             (self.clock(),)).rowcount
+        self._changed()
+        return expired
 
     def close_unfinished(self):
         """At startup: no run of ours survives a restart, so a session of ours that was running or waiting on a
@@ -160,6 +179,7 @@ class Registry:
         self.db.execute("UPDATE sessions SET state='ended', ended_at=?, end_reason='restart' "
                         "WHERE state IN ('running', 'waiting_input') AND origin != 'external'", (now,))
         self.db.execute("UPDATE tasks SET status='aborted', finished_at=? WHERE status='running'", (now,))
+        self._changed()
 
     def set_grant(self, session_id, folder, access):
         """The folder grant an errand ran under (folders.py: once, always or a covering standing grant), for its

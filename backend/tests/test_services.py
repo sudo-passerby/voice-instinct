@@ -50,6 +50,21 @@ def test_ollama_and_openai_compatible_get_the_same_settings(monkeypatch):
     assert llm._settings.model == "qwen3:8b" and llm._settings.system_instruction == "BE BRIEF"
 
 
+def test_a_local_model_gets_the_same_prompt_and_never_thinks_aloud(monkeypatch):
+    # With reasoning on qwen3.5:4b took 13 s; with Ollama's /v1 left to default it spoke its reasoning. Its own
+    # extra tool rules were dropped (2026-11-14): with the same prompt as Gemini it scored as Gemini did, 82/87.
+    llm = build_llm(Config(provider="ollama", model="qwen3.5:4b", api_key_env="NO_SUCH_KEY"), "BE BRIEF")
+    assert llm._settings.system_instruction == "BE BRIEF"
+    assert llm._settings.extra["reasoning_effort"] == "none"
+
+
+def test_gemini_and_openai_keep_their_prompt_as_given(monkeypatch):
+    monkeypatch.setenv("TEST_KEY", "k")
+    for provider in ("gemini", "openai"):
+        llm = build_llm(Config(provider=provider, model="m", api_key_env="TEST_KEY"), "BE BRIEF")
+        assert llm._settings.system_instruction == "BE BRIEF" and not llm._settings.extra
+
+
 from pathlib import Path
 
 from services import PARAKEET_NAME, kokoro_paths, parakeet_dir
@@ -118,7 +133,7 @@ def test_kokoro_loads_once_per_process_and_off_the_event_loop(tmp_path, monkeypa
 
 
 def test_the_shared_kokoro_service_is_set_up_like_pipecats_own(monkeypatch):
-    # SharedKokoroTTSService skips KokoroTTSService.__init__ (it loads the model): pinned to Pipecat 1.12.
+    # SharedKokoroTTSService skips KokoroTTSService.__init__ (it loads the model): pinned to Pipecat 1.16.
     import pipecat.services.kokoro.tts as kokoro_tts
     from services import SharedKokoroTTSService
     monkeypatch.setattr(kokoro_tts, "Kokoro", FakeKokoro)
@@ -130,3 +145,20 @@ def test_the_shared_kokoro_service_is_set_up_like_pipecats_own(monkeypatch):
     assert set(vars(ours)) == set(vars(theirs))
     with pytest.raises(ValueError, match="voice"):
         SharedKokoroTTSService(FakeKokoro("m", "v"), "no_such_voice")
+
+
+def test_a_local_model_gets_the_apps_own_messages_as_system(monkeypatch):
+    # Ollama ignores the "developer" role that relay uses for a due reminder or an errand's question: qwen3.5:4b
+    # then ended the conversation on a reminder and started an errand on a question, 0/3 each (2026-11-14); sent as
+    # "system" it spoke the reminder 3/3.
+    llm = build_llm(Config(provider="ollama", model="qwen3.5:4b", api_key_env="NO_SUCH_KEY"), "BE BRIEF")
+    msgs = [{"role": "user", "content": "hi"}, {"role": "developer", "content": "Reminder: call mom"}]
+    params = llm.build_chat_completion_params({"messages": msgs})
+    assert [m["role"] for m in params["messages"]] == ["user", "system"] and msgs[1]["role"] == "developer"
+
+
+def test_gemini_compatible_services_keep_the_developer_role(monkeypatch):
+    monkeypatch.setenv("TEST_KEY", "k")
+    llm = build_llm(Config(provider="openai", model="m", api_key_env="TEST_KEY"), "BE BRIEF")
+    params = llm.build_chat_completion_params({"messages": [{"role": "developer", "content": "x"}]})
+    assert params["messages"][0]["role"] == "developer"

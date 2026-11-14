@@ -2,7 +2,7 @@
 
 `wake()` and `keep_awake()` are ours: the strategy has no public way to wake from code, so they call
 its private `_transition_to_awake` / `_refresh_timeout`, and `hold` overrides `_transition_to_idle`
-(all pinned by tests against Pipecat 1.12).
+(all pinned by tests against Pipecat 1.16). `manual` (push-to-talk) narrows awake to the wake phrase.
 """
 
 import asyncio
@@ -10,15 +10,20 @@ import asyncio
 from loguru import logger
 
 from pipecat.adapters.schemas.direct_function import tool_options
-from pipecat.frames.frames import FunctionCallResultProperties
+from pipecat.frames.frames import BotSpeakingFrame, FunctionCallResultProperties, TranscriptionFrame
 from pipecat.turns.user_start import WakePhraseUserTurnStartStrategy
+from pipecat.turns.types import ProcessFrameResult
+from pipecat.turns.user_start.base_user_turn_start_strategy import BaseUserTurnStartStrategy
 from pipecat.turns.user_start.wake_phrase_user_turn_start_strategy import _WakeState
 
 
 class ProgrammaticWake(WakePhraseUserTurnStartStrategy):
-    def __init__(self, *, hold=lambda: False, **kwargs):
+    def __init__(self, *, hold=lambda: False, manual=lambda: False, **kwargs):
         super().__init__(**kwargs)
         self._hold = hold  # while it returns True (a question waits for an answer), never fall asleep
+        # While it returns True (after a push-to-talk turn, ptt.py), awake listens only for the wake phrase:
+        # background sound can neither interrupt the answer nor start a turn.
+        self._manual = manual
         self._early_wake = None
         self._dismissing = None  # a timer while a dismissal waits for the goodbye line (#32)
 
@@ -27,6 +32,19 @@ class ProgrammaticWake(WakePhraseUserTurnStartStrategy):
         if self._early_wake is not None:
             reason, self._early_wake = self._early_wake, None
             self.wake(reason)
+
+    async def process_frame(self, frame):
+        if not (self.awake and self._manual()):
+            return await super().process_frame(frame)
+        await BaseUserTurnStartStrategy.process_frame(self, frame)
+        if isinstance(frame, BotSpeakingFrame):
+            self._refresh_timeout()  # stay shown while the answer plays
+        elif isinstance(frame, TranscriptionFrame):
+            if self._check_wake_phrase(frame.text):  # its name: a normal turn again (ptt clears manual)
+                await self.report_user_turn_started()
+            else:
+                await self.trigger_reset_aggregation()  # not for Nova
+        return ProcessFrameResult.STOP
 
     def _transition_to_idle(self):
         if not self._hold():
@@ -77,8 +95,8 @@ class ProgrammaticWake(WakePhraseUserTurnStartStrategy):
             self._dismissing = None
 
 
-def make_wake(phrases, timeout, send, hold=lambda: False) -> ProgrammaticWake:
-    w = ProgrammaticWake(phrases=phrases, timeout=timeout, hold=hold)
+def make_wake(phrases, timeout, send, hold=lambda: False, manual=lambda: False) -> ProgrammaticWake:
+    w = ProgrammaticWake(phrases=phrases, timeout=timeout, hold=hold, manual=manual)
 
     @w.event_handler("on_wake_phrase_detected")
     async def _woke(strategy, phrase):

@@ -9,6 +9,7 @@ prints this rule with the numbers for your screen; add it to `~/.config/sway/con
 for_window [app_id="voice-instinct"] floating enable, sticky enable, border none, resize set 128 128, move position 1128 12
 # optional: show or hide the orb from the keyboard
 bindsym $mod+n exec ~/.local/bin/voice-instinct toggle
+bindsym $mod+p exec ~/.local/bin/voice-instinct talk   # push-to-talk: press, speak, press again to send
 # start the orb at login (Sway does not run XDG autostart entries; skip this if your config
 # already has `exec dex --autostart`, which runs them)
 exec ~/.local/bin/voice-instinct

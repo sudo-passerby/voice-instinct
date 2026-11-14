@@ -24,7 +24,7 @@ from confirm import name_words
 from debugbrowser import headless_shell, launch as launch_debug_browser
 from delegate import errand_lock, make_tools
 from folders import Folders, make_folder_tools
-from gui import make_gui_router
+from gui import ErrandFeed, make_gui_router
 from guard import refuse_other_origins
 from hooks import HookBridge, hide_hook_tokens, load_token, make_router, write_run_settings
 from pipecat.audio.vad.silero import SileroVADAnalyzer
@@ -53,6 +53,7 @@ from steps import StepHub
 from vault import Vault, make_router as make_vault_router, with_vault
 from telegram import Telegram
 from memory import PROMPT as MEMORY_PROMPT, Memory, make_memory_tools
+from ptt import PushToTalk, PushToTalkStop, make_listening_tool
 from wake import handle_client_message, make_dismiss, make_wake
 
 load_dotenv(REPO_ROOT / ".env")
@@ -70,7 +71,7 @@ registry = Registry(DATA / "harness.db")
 registry.expire_open()  # questions left open by a previous run can no longer be answered
 registry.close_unfinished()  # and no errand survived it: none shows as running
 sessions = set()  # open sessions' runners, cancelled when the server is stopped
-relay = Relay(registry)
+relay = Relay(registry, local=cfg.provider == "ollama")  # questions framed for a small local model
 MEMORY = Memory(DATA / "memory")  # profile, notes and memory files (#25, #26); off if unusable
 MEMORY.ensure()
 HOOK_TOKEN = load_token(DATA / "hook-token")
@@ -107,6 +108,7 @@ logging.getLogger("phonemizer").setLevel(logging.ERROR)  # Kokoro's espeak warns
 SYSTEM_PROMPT = (
     "You are a voice-first personal agent that handles everyday errands for the user, like a "
     "concierge. Your replies are spoken aloud, so use short, plain sentences with no markdown, "
+    "always in English unless the user speaks a whole sentence in another language, "
     "lists, or emoji; keep answers to one to three sentences unless asked for more. "
     "Your work is errands: researching and comparing options, planning and booking travel, "
     "restaurants and tickets, shopping and groceries, getting bills ready to pay, cancelling subscriptions, "
@@ -126,8 +128,8 @@ SYSTEM_PROMPT = (
     "the errand asks them before such a step. "
     "If a delegate result is a question from the agent, such as a choice, ask the "
     "user and call delegate again with their reply and that result's errand id. For any follow-up "
-    "about an earlier errand (check again, refine it, what about those), call delegate with its "
-    "errand id; for a new topic leave errand out. An errand works only in its own private workspace: pass "
+    "about an earlier errand (check again, another date or option, act on what it found, what about those), "
+    "call delegate with its errand id; for a different goal leave errand out. An errand works only in its own private workspace: pass "
     "directory only when the user names a folder of theirs, with access read, or write if they want files "
     "changed; never ask for delete access unless the user said to delete something. The tool asks the user "
     "itself, so never claim access was given. When the user says an errand may always use a folder, call "
@@ -157,6 +159,7 @@ HOOK_PORT = 7860  # the runner's port: hooks post back to this same server
 # second errand, and stop_session can stop a run that any session started.
 BACKEND = ClaudeCodeBackend(cmd=os.environ.get("VI_CLAUDE", "claude"), cwd=cfg.backend_cwd,
                             timeout=cfg.backend_timeout, permission_mode=cfg.permission_mode,
+                            model=cfg.agent_model,  # errands on Sonnet or Haiku, never the CLI default (Opus)
                             hide_env=(cfg.api_key_env, "TELEGRAM_CHAT_ID"),  # the bot token goes as *_TOKEN
                             about_user=lambda: MEMORY.prompt_block(errand=True))  # read fresh per errand
 ERRANDS = errand_lock()
@@ -199,11 +202,13 @@ async def bot(runner_args: RunnerArguments):
         if "worker" in holder:
             await holder["worker"].rtvi.send_server_message(msg)
 
+    errands = ErrandFeed(registry, send_gui)  # the orb shows running errands and a waiting question (gui.py)
     wake = make_wake(cfg.wake_phrases, cfg.awake_timeout, send_gui,
-                     hold=lambda: relay.holds_awake)  # the window restarts when Nova finishes speaking
+                     hold=lambda: relay.holds_awake or ptt.active, manual=lambda: ptt.manual)  # the window restarts when Nova finishes speaking
     stt = make_stt(cfg)
+    ptt = PushToTalk(wake, stt, lambda frame: holder["worker"].queue_frame(frame))  # `voice-instinct talk`
 
-    tools = [make_dismiss(wake), current_time, *make_reminder_tools(registry, TELEGRAM),
+    tools = [make_dismiss(wake), make_listening_tool(ptt), current_time, *make_reminder_tools(registry, TELEGRAM),
              # forget also scrubs the conversation restored at every connect (context is set below, before any call)
              *make_memory_tools(MEMORY, on_forget=lambda match: scrub_conversation(context, match, registry))]
     if backend.available():
@@ -222,13 +227,17 @@ async def bot(runner_args: RunnerArguments):
     tts.add_text_transformer(lambda text, _type: markdown.filter(text), "*")
 
     context = make_context(registry, tools)  # the one ongoing conversation, from where it left off (#24)
+    # answer_question is offered only while a question waits (relay.set_tools); without the CLI there is none.
+    relay.set_tools(context, tools, next((t for t in tools if t.__name__ == "answer_question"), None))
     user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
         context,
         # Defaults: Smart Turn v3 stop strategy (Speech Input & Turn Detection > Best Practices).
         user_params=LLMUserAggregatorParams(
             vad_analyzer=SileroVADAnalyzer(),
             # Documented: a wake phrase gates every turn; the defaults follow it.
-            user_turn_strategies=UserTurnStrategies(start=[wake, *default_user_turn_start_strategies()]),
+            # The stop is the default Smart Turn v3, paused while push-to-talk holds the turn open (ptt.py).
+            user_turn_strategies=UserTurnStrategies(start=[wake, *default_user_turn_start_strategies()],
+                                                    stop=[PushToTalkStop(ptt)]),
         ),
         assistant_params=ASSISTANT_PARAMS,  # older turns are summarized, so it stays bounded
     )
@@ -254,10 +263,13 @@ async def bot(runner_args: RunnerArguments):
     # neither side is talking.
     @user_aggregator.event_handler("on_user_turn_started")
     async def on_user_turn_started(aggregator, strategy):
+        logger.info("user turn started")  # markers only
         relay.user_turn(True)
 
     @user_aggregator.event_handler("on_user_turn_stopped")
     async def on_user_turn_stopped(aggregator, strategy, message):
+        logger.info(f"user turn ended ({type(strategy).__name__ if strategy else 'timeout'}, "
+                    f"{'words' if message.content else 'nothing heard'})")
         relay.user_turn(False)
         MEMORY.journal("user", message.content)  # for the nightly memory run; speech before the wake phrase never gets here
 
@@ -285,8 +297,15 @@ async def bot(runner_args: RunnerArguments):
     async def on_client_disconnected(transport, client):
         await runner.cancel()
 
+    @worker.rtvi.event_handler("on_client_ready")  # documented RTVI event: the orb can take messages now
+    async def on_client_ready(rtvi):
+        errands.start()
+        await errands.push(force=True)
+
     @worker.rtvi.event_handler("on_client_message")
     async def on_client_message(rtvi, msg):
+        if msg.type == "talk":
+            await ptt.press()
         handle_client_message(wake, msg)  # documented RTVI client message, sent when the orb is shown
 
     # Documented (Pipeline events): an error reaching the worker. A failed model call is otherwise
@@ -299,6 +318,7 @@ async def bot(runner_args: RunnerArguments):
     @worker.event_handler("on_pipeline_finished")
     async def on_pipeline_finished(worker, frame):
         save_conversation(registry, context)
+        errands.stop()
         relay.detach(worker)  # graceful and cancelled alike; never a newer session's relay
 
     sessions.add(runner)
