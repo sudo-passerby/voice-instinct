@@ -53,7 +53,7 @@ from steps import StepHub
 from vault import Vault, make_router as make_vault_router, with_vault
 from telegram import Telegram
 from memory import PROMPT as MEMORY_PROMPT, Memory, make_memory_tools
-from ptt import PushToTalk, PushToTalkStop
+from ptt import PushToTalk, PushToTalkStop, make_listening_tool
 from wake import handle_client_message, make_dismiss, make_wake
 
 load_dotenv(REPO_ROOT / ".env")
@@ -208,7 +208,7 @@ async def bot(runner_args: RunnerArguments):
     stt = make_stt(cfg)
     ptt = PushToTalk(wake, stt, lambda frame: holder["worker"].queue_frame(frame))  # `voice-instinct talk`
 
-    tools = [make_dismiss(wake), current_time, *make_reminder_tools(registry, TELEGRAM),
+    tools = [make_dismiss(wake), make_listening_tool(ptt), current_time, *make_reminder_tools(registry, TELEGRAM),
              # forget also scrubs the conversation restored at every connect (context is set below, before any call)
              *make_memory_tools(MEMORY, on_forget=lambda match: scrub_conversation(context, match, registry))]
     if backend.available():

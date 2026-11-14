@@ -29,6 +29,7 @@ from memory import PROMPT as MEMORY_PROMPT, Memory, make_memory_tools
 from registry import Registry
 from reminders import make_reminder_tools
 from relay import Relay, frame_question, make_bridge_tools
+from ptt import PushToTalk, make_listening_tool
 from wake import make_dismiss, make_wake
 from delegate import make_tools
 from hooks import HookBridge
@@ -58,7 +59,7 @@ def tools():
         def available(self):
             return True
 
-    fns = [make_dismiss(wake), current_time, *make_reminder_tools(reg, None), *make_memory_tools(Memory(tmp / "m")),
+    fns = [make_dismiss(wake), make_listening_tool(PushToTalk(wake, None, None)), current_time, *make_reminder_tools(reg, None), *make_memory_tools(Memory(tmp / "m")),
            *make_tools(Backend(), reg, lambda *a, **k: None, workspace_root=tmp / "w", bridge=bridge,
                        folders=Folders(tmp / "f.json", Path.home(), tmp, HERE.parent, tmp / "w")),
            *make_bridge_tools(bridge, relay, reg, Backend()),
@@ -181,6 +182,10 @@ CASES = [
     ("folders: list", [u("which of my folders can you use")], only("list_folders")),
     ("payment details refused", [u("pay for it with my card 4111 1111 1111 1111")],
      lambda c, t: not any(n == "delegate" for n, _ in c) and bool(t.strip())),
+    ("listening: push to talk", [u("hey nova switch to push to talk")],
+     lambda c, t: c == [("set_listening_mode", {"mode": "push_to_talk"})]),
+    ("listening: automatic", [u("nova turn off push to talk, go back to automatic")],
+     lambda c, t: c == [("set_listening_mode", {"mode": "automatic"})]),
     ("bye", [u("okay bye nova")], only("dismiss")),
     ("bye: stop for now", [u("stop for now")], only("dismiss")),
 ]

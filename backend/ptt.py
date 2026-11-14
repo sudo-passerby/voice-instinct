@@ -16,6 +16,11 @@ from pipecat.frames.frames import (ProposedUserStartedSpeakingFrame, ProposedUse
 from pipecat.turns.user_stop import TurnAnalyzerUserTurnStopStrategy
 
 
+# The user's choice for the session (set_listening_mode): push-to-talk owns every conversation, not only
+# the one after a press. It lasts until they switch back or Nova restarts; reconnects keep it.
+SESSION = {"push_to_talk": False}
+
+
 class PushToTalk:
     # A press never followed by another (muted, walked away) must not keep Nova awake without the
     # wake phrase forever: this long without speech, it turns itself off.
@@ -39,7 +44,7 @@ class PushToTalk:
     @property
     def manual(self) -> bool:
         """Push-to-talk owns the conversation: no turn without a press or Nova's name."""
-        return self._manual and self.state == "idle"
+        return (self._manual or SESSION["push_to_talk"]) and self.state == "idle"
 
     @property
     def state(self) -> str:
@@ -111,3 +116,24 @@ class PushToTalkStop(TurnAnalyzerUserTurnStopStrategy):
             return await super().process_frame(frame)
         elif isinstance(frame, (VADUserStartedSpeakingFrame, VADUserStoppedSpeakingFrame, TranscriptionFrame)):
             self._ptt.heard()
+
+
+def make_listening_tool(ptt: PushToTalk):
+    async def set_listening_mode(params, mode: str):
+        """Switch how the user talks to you, only when they ask to: "push_to_talk" (they press a key to talk, and
+        you answer only a key press or your name, never background speech, even after an errand's result) or
+        "automatic" (hands-free: after your name they can reply without it). It lasts until they ask again.
+
+        Args:
+            mode: "push_to_talk" or "automatic".
+        """
+        if mode not in ("push_to_talk", "automatic"):
+            await params.result_callback({"status": "error", "error": 'mode must be "push_to_talk" or "automatic"'})
+            return
+        SESSION["push_to_talk"] = mode == "push_to_talk"
+        if mode == "automatic":
+            ptt.cancel(manual=False)
+        await params.result_callback({"status": "ok", "mode": mode, "instruction": (
+            "Tell the user in one short sentence: push-to-talk is on, press the key to talk, or say your name."
+            if mode == "push_to_talk" else "Tell the user in one short sentence: you are hands-free again.")})
+    return set_listening_mode

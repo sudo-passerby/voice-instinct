@@ -220,3 +220,33 @@ def test_a_press_while_nova_answers_interrupts_it_at_once():
     asyncio.run(converse([SleepFrame(sleep=0.4)], presses=[(0.05, None)]))
     assert any(isinstance(f, InterruptionFrame) for f in converse.down)
     assert converse.stops == []  # and the turn stays open until the second press
+
+
+def test_push_to_talk_mode_for_the_session_ignores_background_speech_even_after_hey_nova():
+    # "Hey Nova, switch to push to talk": from then on, only a press or its name starts a turn.
+    from ptt import SESSION
+    SESSION["push_to_talk"] = True
+    try:
+        rec = Script("hey nova book a table", "the tv in the next room", "hey nova what time is it")
+        frames = [*talk(), *gap(), *talk(), *gap(), *talk(), *gap(1.5)]
+        users, ptt = asyncio.run(converse(frames, presses=[], rec=rec))
+    finally:
+        SESSION["push_to_talk"] = False
+    assert "the tv in the next room" not in " ".join(users) and "what time is it" in " ".join(users)
+
+
+def test_switching_modes_by_voice():
+    from types import SimpleNamespace
+    from ptt import SESSION, make_listening_tool
+    out = []
+
+    async def cb(r, **kw):
+        out.append(r)
+    ptt = PushToTalk(make_wake(["hey nova"], 10, None), None, None)
+    tool = make_listening_tool(ptt)
+    asyncio.run(tool(SimpleNamespace(result_callback=cb), "push_to_talk"))
+    assert SESSION["push_to_talk"] and ptt.manual
+    asyncio.run(tool(SimpleNamespace(result_callback=cb), "automatic"))
+    assert not SESSION["push_to_talk"] and not ptt.manual
+    asyncio.run(tool(SimpleNamespace(result_callback=cb), "loud"))
+    assert out[-1]["status"] == "error" and not SESSION["push_to_talk"]
