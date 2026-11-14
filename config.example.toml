@@ -20,6 +20,7 @@ position = "top-right"        # bottom-right | bottom-left | top-right | top-lef
 workspace_dir = "~/.voice-instinct/workspace"
 
 [agent]
+model = "sonnet"       # the Claude model errands run on: sonnet or haiku (cheaper, less capable)
 permission_mode = "auto"      # Claude Code permission mode inside the sandbox
 backend_timeout = 300
 permission_timeout = 90

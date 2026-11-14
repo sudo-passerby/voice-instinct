@@ -70,7 +70,7 @@ registry = Registry(DATA / "harness.db")
 registry.expire_open()  # questions left open by a previous run can no longer be answered
 registry.close_unfinished()  # and no errand survived it: none shows as running
 sessions = set()  # open sessions' runners, cancelled when the server is stopped
-relay = Relay(registry)
+relay = Relay(registry, local=cfg.provider == "ollama")  # questions framed for a small local model
 MEMORY = Memory(DATA / "memory")  # profile, notes and memory files (#25, #26); off if unusable
 MEMORY.ensure()
 HOOK_TOKEN = load_token(DATA / "hook-token")
@@ -107,6 +107,7 @@ logging.getLogger("phonemizer").setLevel(logging.ERROR)  # Kokoro's espeak warns
 SYSTEM_PROMPT = (
     "You are a voice-first personal agent that handles everyday errands for the user, like a "
     "concierge. Your replies are spoken aloud, so use short, plain sentences with no markdown, "
+    "always in English unless the user speaks a whole sentence in another language, "
     "lists, or emoji; keep answers to one to three sentences unless asked for more. "
     "Your work is errands: researching and comparing options, planning and booking travel, "
     "restaurants and tickets, shopping and groceries, getting bills ready to pay, cancelling subscriptions, "
@@ -126,8 +127,8 @@ SYSTEM_PROMPT = (
     "the errand asks them before such a step. "
     "If a delegate result is a question from the agent, such as a choice, ask the "
     "user and call delegate again with their reply and that result's errand id. For any follow-up "
-    "about an earlier errand (check again, refine it, what about those), call delegate with its "
-    "errand id; for a new topic leave errand out. An errand works only in its own private workspace: pass "
+    "about an earlier errand (check again, another date or option, act on what it found, what about those), "
+    "call delegate with its errand id; for a different goal leave errand out. An errand works only in its own private workspace: pass "
     "directory only when the user names a folder of theirs, with access read, or write if they want files "
     "changed; never ask for delete access unless the user said to delete something. The tool asks the user "
     "itself, so never claim access was given. When the user says an errand may always use a folder, call "
@@ -157,6 +158,7 @@ HOOK_PORT = 7860  # the runner's port: hooks post back to this same server
 # second errand, and stop_session can stop a run that any session started.
 BACKEND = ClaudeCodeBackend(cmd=os.environ.get("VI_CLAUDE", "claude"), cwd=cfg.backend_cwd,
                             timeout=cfg.backend_timeout, permission_mode=cfg.permission_mode,
+                            model=cfg.agent_model,  # errands on Sonnet or Haiku, never the CLI default (Opus)
                             hide_env=(cfg.api_key_env, "TELEGRAM_CHAT_ID"),  # the bot token goes as *_TOKEN
                             about_user=lambda: MEMORY.prompt_block(errand=True))  # read fresh per errand
 ERRANDS = errand_lock()
@@ -223,6 +225,8 @@ async def bot(runner_args: RunnerArguments):
     tts.add_text_transformer(lambda text, _type: markdown.filter(text), "*")
 
     context = make_context(registry, tools)  # the one ongoing conversation, from where it left off (#24)
+    # answer_question is offered only while a question waits (relay.set_tools); without the CLI there is none.
+    relay.set_tools(context, tools, next((t for t in tools if t.__name__ == "answer_question"), None))
     user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
         context,
         # Defaults: Smart Turn v3 stop strategy (Speech Input & Turn Detection > Best Practices).

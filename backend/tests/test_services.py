@@ -47,16 +47,14 @@ def test_ollama_and_openai_compatible_get_the_same_settings(monkeypatch):
     monkeypatch.delenv("NO_SUCH_KEY", raising=False)
     cfg = Config(provider="ollama", model="qwen3:8b", api_key_env="NO_SUCH_KEY")
     llm = build_llm(cfg, "BE BRIEF")
-    assert llm._settings.model == "qwen3:8b" and llm._settings.system_instruction.startswith("BE BRIEF")
+    assert llm._settings.model == "qwen3:8b" and llm._settings.system_instruction == "BE BRIEF"
 
 
-def test_a_local_model_gets_the_tool_rules_and_never_thinks_aloud(monkeypatch):
-    # A small local model called the clock for a fun fact and ended the conversation for a joke (2026-11-14), and
-    # with reasoning on it took 13 s; with Ollama's /v1 left to default it spoke its reasoning.
+def test_a_local_model_gets_the_same_prompt_and_never_thinks_aloud(monkeypatch):
+    # With reasoning on qwen3.5:4b took 13 s; with Ollama's /v1 left to default it spoke its reasoning. Its own
+    # extra tool rules were dropped (2026-11-14): with the same prompt as Gemini it scored as Gemini did, 82/87.
     llm = build_llm(Config(provider="ollama", model="qwen3.5:4b", api_key_env="NO_SUCH_KEY"), "BE BRIEF")
-    rules = llm._settings.system_instruction
-    assert rules.startswith("BE BRIEF") and "Never call dismiss for a request" in rules and "digits" in rules
-    assert "never put Telegram or sending in its task" in rules  # an errand once tried Telegram's website
+    assert llm._settings.system_instruction == "BE BRIEF"
     assert llm._settings.extra["reasoning_effort"] == "none"
 
 
@@ -147,3 +145,20 @@ def test_the_shared_kokoro_service_is_set_up_like_pipecats_own(monkeypatch):
     assert set(vars(ours)) == set(vars(theirs))
     with pytest.raises(ValueError, match="voice"):
         SharedKokoroTTSService(FakeKokoro("m", "v"), "no_such_voice")
+
+
+def test_a_local_model_gets_the_apps_own_messages_as_system(monkeypatch):
+    # Ollama ignores the "developer" role that relay uses for a due reminder or an errand's question: qwen3.5:4b
+    # then ended the conversation on a reminder and started an errand on a question, 0/3 each (2026-11-14); sent as
+    # "system" it spoke the reminder 3/3.
+    llm = build_llm(Config(provider="ollama", model="qwen3.5:4b", api_key_env="NO_SUCH_KEY"), "BE BRIEF")
+    msgs = [{"role": "user", "content": "hi"}, {"role": "developer", "content": "Reminder: call mom"}]
+    params = llm.build_chat_completion_params({"messages": msgs})
+    assert [m["role"] for m in params["messages"]] == ["user", "system"] and msgs[1]["role"] == "developer"
+
+
+def test_gemini_compatible_services_keep_the_developer_role(monkeypatch):
+    monkeypatch.setenv("TEST_KEY", "k")
+    llm = build_llm(Config(provider="openai", model="m", api_key_env="TEST_KEY"), "BE BRIEF")
+    params = llm.build_chat_completion_params({"messages": [{"role": "developer", "content": "x"}]})
+    assert params["messages"][0]["role"] == "developer"

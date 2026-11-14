@@ -310,3 +310,10 @@ def test_the_front_model_hands_checkout_to_the_user():
     for must in ("never pay", "ready for them to finish", "send_telegram", "their own browser",
                  "card or UPI details", "free"):
         assert must in text, must
+
+
+def test_errands_run_on_the_model_config_names_not_the_users_default(tmp_path):
+    # The owner's Claude Code default is Opus; errands are to run on Sonnet or Haiku (2026-11-14).
+    cli = _script(tmp_path, 'printf \'{"type":"result","result":"%s"}\\n\' "$*"\n')
+    assert "--model sonnet" in asyncio.run(ClaudeCodeBackend(cmd=cli, model="sonnet").run("t")).text
+    assert "--model" not in asyncio.run(ClaudeCodeBackend(cmd=cli, model=None).run("t")).text

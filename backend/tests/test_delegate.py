@@ -285,8 +285,16 @@ def test_the_result_is_spoken_as_a_short_summary_not_read_out():
     run(delegate(p, "flights"))
     note = out[-1]["note"]
     assert "two short sentences" in note and "offer" in note and "table" in note
-    # Asked for on Telegram, Nova sends it itself: an errand once tried Telegram's website instead (2026-11-14).
-    assert "send_telegram now" in note
+    assert "send_telegram" not in note  # not asked for: a small model sent every result to Telegram
+
+
+def test_a_result_the_user_asked_for_on_telegram_is_sent_there_by_nova():
+    # An errand once tried Telegram's website instead (2026-11-14): Nova sends it, and only when asked.
+    reg, b, delegate = setup([BackendResult("High Steak 4.6", "s1")])
+    p, out = make_params()
+    p.context = SimpleNamespace(get_messages=lambda: [{"role": "user", "content": "find restaurants and send me the list on Telegram"}])
+    run(delegate(p, "find restaurants"))
+    assert "send_telegram now" in out[-1]["note"]
 
 
 class FakeSteps:
@@ -555,3 +563,14 @@ def test_without_the_vaults_browser_an_errand_keeps_the_normal_one():
                              vault_mcp=lambda mcp, sid: pytest.fail("no vault tool without its browser"))
     run(delegate(make_params()[0], "find flights"))
     assert b.calls[0]["mcp_config"] is None
+
+
+def test_an_errand_id_sent_as_text_still_continues_that_errand():
+    # qwen3.5:4b sends {"errand": "23"} (2026-11-14): the same errand, never a new one or "No such errand."
+    reg, b, delegate = setup([BackendResult("first", "s1"), BackendResult("again", "s1")])
+    p, out = make_params()
+    run(delegate(p, "find events"))
+    first = out[-1]["errand"]
+    p, out = make_params()
+    run(delegate(p, "apply to the second one", errand=str(first)))
+    assert out[-1]["status"] == "done" and out[-1]["errand"] != first and b.calls[-1]["resume"] is True
