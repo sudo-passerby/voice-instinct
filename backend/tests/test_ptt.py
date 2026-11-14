@@ -46,16 +46,16 @@ def talk(n=5):
     return [VADUserStartedSpeakingFrame(), *audio(SPEECH, n), VADUserStoppedSpeakingFrame()]
 
 
-async def converse(frames, presses, decode_secs=0.0, quiet=None):
+async def converse(frames, presses, decode_secs=0.0, quiet=None, rec=None):
     """`presses`: seconds after the previous press at which Win+P is pressed, or a callable(wake, ptt)."""
     ctx, sent = LLMContext(), []
 
     async def send(msg):
         sent.append(msg)
 
-    stt = ParakeetSTTService(recognizer=Numbered(decode_secs))
+    stt = ParakeetSTTService(recognizer=rec or Numbered(decode_secs))
     stt.PAUSE_SECS = 0.2
-    wake = make_wake(["hey nova"], 10, send, hold=lambda: ptt.active)  # wired as in bot.py
+    wake = make_wake(["hey nova"], 10, send, hold=lambda: ptt.active, manual=lambda: ptt.manual)  # as in bot.py
     ptt = PushToTalk(wake, stt)
     if quiet:
         ptt.QUIET_SECS = quiet
@@ -163,3 +163,50 @@ def test_hey_nova_still_works_without_ever_pressing_the_key():
     asyncio.run(go())
     assert [m["content"] for m in ctx.get_messages() if m["role"] == "user"] == ["Hey Nova, what's the time?"]
     assert sent[0] == {"type": "wake", "reason": "phrase"}
+
+
+class Script(Numbered):
+    """Segment n is heard as texts[n]."""
+
+    def __init__(self, *texts):
+        super().__init__()
+        self.texts = texts
+
+    def create_stream(self):
+        rec = self
+
+        class S:
+            def accept_waveform(self, sample_rate, samples):
+                rec.n += 1
+                self.result = type("R", (), {"text": rec.texts[rec.n - 1]})()
+        return S()
+
+
+def gap(secs=0.8):
+    return [*audio(SILENCE, 5), SleepFrame(sleep=secs)]
+
+
+def test_after_a_push_to_talk_turn_background_speech_is_ignored_but_its_name_is_not():
+    rec = Script("book a table", "the tv in the next room", "hey nova what time is it")
+    frames = [*talk(), *gap(0.5), *talk(), *gap(), *talk(), *gap(1.5)]
+    users, ptt = asyncio.run(converse(frames, presses=[(0.05, None), (0.5, None)], rec=rec))
+    assert users == ["book a table", "hey nova what time is it"]
+    assert not ptt.manual  # its name: back to the hands-free conversation
+
+
+def test_after_hey_nova_background_speech_still_counts_as_a_reply():
+    # The hands-free conversation, unchanged: once called by name, the next thing said is a reply.
+    rec = Script("hey nova book a table", "the tv in the next room")
+    frames = [*talk(), *gap(), *talk(), *gap(1.5)]
+    users, _ = asyncio.run(converse(frames, presses=[], rec=rec))
+    assert "the tv in the next room" in " ".join(users)  # heard (no bot reply here, so in the same turn)
+
+
+def test_once_nova_sleeps_after_push_to_talk_its_usual_wakes_work_again():
+    async def sleep_then_reply(wake, ptt):
+        wake.sleep()
+        wake.wake("reply")  # an errand's result later on
+    rec = Script("book a table", "yes please")
+    frames = [*talk(), *gap(0.6), *talk(), *gap(1.5)]
+    users, ptt = asyncio.run(converse(frames, presses=[(0.05, None), (0.5, None), (0.2, sleep_then_reply)], rec=rec))
+    assert users == ["book a table", "yes please"] and not ptt.manual

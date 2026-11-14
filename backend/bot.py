@@ -204,7 +204,7 @@ async def bot(runner_args: RunnerArguments):
 
     errands = ErrandFeed(registry, send_gui)  # the orb shows running errands and a waiting question (gui.py)
     wake = make_wake(cfg.wake_phrases, cfg.awake_timeout, send_gui,
-                     hold=lambda: relay.holds_awake or ptt.active)  # the window restarts when Nova finishes speaking
+                     hold=lambda: relay.holds_awake or ptt.active, manual=lambda: ptt.manual)  # the window restarts when Nova finishes speaking
     stt = make_stt(cfg)
     ptt = PushToTalk(wake, stt)  # `voice-instinct talk`
 

@@ -23,8 +23,21 @@ class PushToTalk:
         self._state = "idle"  # idle, talking, ending (the second press, until the stop goes through)
         self._wake, self._stt = wake, stt
         self._heard = 0.0
+        self._manual = False  # after a push-to-talk turn, until Nova sleeps or hears its name (wake.py)
         # Hiding the orb or saying bye puts Nova to sleep (wake.sleep, past the hold): push-to-talk ends too.
-        wake.add_event_handler("on_wake_phrase_timeout", lambda *_: self.reset())
+        wake.add_event_handler("on_wake_phrase_timeout", lambda *_: self.reset(manual=False))
+        wake.add_event_handler("on_wake_phrase_detected", self._woke)
+
+    def _woke(self, _wake, reason):
+        if reason not in self.REASONS:
+            self._manual = False  # the user called Nova by name: the usual hands-free conversation
+
+    REASONS = ("talk", "reply", "question", "shown")  # wake.wake() reasons; anything else is the wake phrase
+
+    @property
+    def manual(self) -> bool:
+        """Push-to-talk owns the conversation: no turn without a press or Nova's name."""
+        return self._manual and self.state == "idle"
 
     @property
     def state(self) -> str:
@@ -39,8 +52,10 @@ class PushToTalk:
     def heard(self):
         self._heard = time.monotonic()
 
-    def reset(self):
+    def reset(self, manual=None):
         self._state = "idle"
+        if manual is not None:
+            self._manual = manual
 
     async def press(self):
         if self.state == "idle":
@@ -72,7 +87,7 @@ class PushToTalkStop(TurnAnalyzerUserTurnStopStrategy):
 
     async def process_frame(self, frame):
         if isinstance(frame, ProposedUserStoppedSpeakingFrame) and self._ptt.state == "ending":
-            self._ptt.reset()
+            self._ptt.reset(manual=True)
             await self.report_user_turn_stopped()  # without an open turn (nothing said) Pipecat ignores it
         elif not self._ptt.active or isinstance(frame, (StartFrame, STTMetadataFrame)):
             return await super().process_frame(frame)
