@@ -7,6 +7,7 @@ buffered and only then proposes the stop, so the last words are in the turn. The
 resolves that documented ProposedUserStoppedSpeakingFrame.
 """
 
+import asyncio
 import time
 
 from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
@@ -26,7 +27,7 @@ class PushToTalk:
         self._heard = 0.0
         self._manual = False  # after a push-to-talk turn, until Nova sleeps or hears its name (wake.py)
         # Hiding the orb or saying bye puts Nova to sleep (wake.sleep, past the hold): push-to-talk ends too.
-        wake.add_event_handler("on_wake_phrase_timeout", lambda *_: self.reset(manual=False))
+        wake.add_event_handler("on_wake_phrase_timeout", lambda *_: self.cancel(manual=False))
         wake.add_event_handler("on_wake_phrase_detected", self._woke)
 
     def _woke(self, _wake, reason):
@@ -43,7 +44,7 @@ class PushToTalk:
     @property
     def state(self) -> str:
         if self._state != "idle" and time.monotonic() - self._heard > self.QUIET_SECS:
-            self._state = "idle"
+            self.cancel()
         return self._state
 
     @property
@@ -53,10 +54,23 @@ class PushToTalk:
     def heard(self):
         self._heard = time.monotonic()
 
-    def reset(self, manual=None):
-        self._state = "idle"
+    def stopped(self):
+        """The second press's stop went through: the turn has ended, and push-to-talk owns what follows."""
+        self._state, self._manual = "idle", True
+
+    def cancel(self, manual=None):
+        """Push-to-talk ends without the second press (quiet too long, Nova put to sleep, a third press).
+        The press told Pipecat the user is speaking, and it never ends a turn while they are, so say they
+        stopped: the turn then ends on Pipecat's own stop timeout, and Smart Turn is back."""
         if manual is not None:
             self._manual = manual
+        if self._state == "idle":
+            return
+        self._state = "idle"
+        try:
+            asyncio.get_running_loop().create_task(self._queue(ProposedUserStoppedSpeakingFrame()))
+        except RuntimeError:
+            pass  # no pipeline running: no turn to end
 
     async def press(self):
         if self.state == "idle":
@@ -70,7 +84,7 @@ class PushToTalk:
             self._state = "ending"
             await self._stt.end_turn()
         else:
-            self.reset()  # a third press while a stop never came: never leave Smart Turn paused
+            self.cancel()  # a third press while a stop never came: never leave Smart Turn paused
 
 
 class PushToTalkStop(TurnAnalyzerUserTurnStopStrategy):
@@ -91,7 +105,7 @@ class PushToTalkStop(TurnAnalyzerUserTurnStopStrategy):
 
     async def process_frame(self, frame):
         if isinstance(frame, ProposedUserStoppedSpeakingFrame) and self._ptt.state == "ending":
-            self._ptt.reset(manual=True)
+            self._ptt.stopped()
             await self.report_user_turn_stopped()  # without an open turn (nothing said) Pipecat ignores it
         elif not self._ptt.active or isinstance(frame, (StartFrame, STTMetadataFrame)):
             return await super().process_frame(frame)

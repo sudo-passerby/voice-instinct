@@ -118,14 +118,16 @@ async def hide(wake, ptt):
     wake.sleep()
 
 
-def test_hiding_the_orb_ends_push_to_talk():
-    users, ptt = asyncio.run(converse([SleepFrame(sleep=0.4)], presses=[(0.05, None), (0.1, hide)]))
-    assert ptt.state == "idle" and not ptt.active
+def test_hiding_the_orb_ends_push_to_talk_and_its_turn():
+    users, ptt = asyncio.run(converse([SleepFrame(sleep=6.0)], presses=[(0.05, None), (0.1, hide)]))
+    assert ptt.state == "idle" and not ptt.active and [text for _, text in converse.stops] == [""]
 
 
-def test_a_press_never_followed_by_another_turns_itself_off():
-    users, ptt = asyncio.run(converse([SleepFrame(sleep=0.6)], presses=[(0.05, None)], quiet=0.3))
-    assert ptt.state == "idle"
+def test_a_press_never_followed_by_another_turns_itself_off_and_closes_its_turn():
+    # The press opened a turn; without this it stayed open for good (Pipecat waits while the user "speaks").
+    frames = [*audio(SILENCE, 5), SleepFrame(sleep=0.6), *audio(SILENCE, 5), SleepFrame(sleep=6.0)]  # the mic keeps sending
+    users, ptt = asyncio.run(converse(frames, presses=[(0.05, None)], quiet=0.3))
+    assert ptt.state == "idle" and [text for _, text in converse.stops] == [""]
 
 
 class Said(Numbered):
