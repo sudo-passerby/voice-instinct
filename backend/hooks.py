@@ -12,7 +12,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Request
 from loguru import logger
 
-from confirm import MONEY_WORDS
+from confirm import MONEY_WORDS, names_a_cancellation
 from debugbrowser import _texts, page_url
 
 _EVENTS = ("PermissionRequest", "Stop", "SessionEnd", "SessionStart")
@@ -208,9 +208,16 @@ def describe(tool_name, tool_input, page=None, real=None):
     return f"{tool_name}: {detail}"
 
 
+# A site with a saved login is signed in to in the errand browser (vault.py), and may have a saved card: no paying
+# step goes ahead there at all, asked or not, until Nova pays with one-time cards (#7).
+SIGNED_IN_NO_PAY = ("You're signed in to this site and it may charge a saved card, so Nova never pays here. Stop "
+                    "and report the page link, what you chose and the total.")
+
+
 class HookBridge:
-    def __init__(self, registry, relay, permission_timeout=90):
-        self.reg, self.relay, self.timeout = registry, relay, permission_timeout
+    def __init__(self, registry, relay, permission_timeout=90, signed_in=None):
+        """signed_in: async (url) -> True when the page is on a site with a saved login (vault.Vault.signed_in)."""
+        self.reg, self.relay, self.timeout, self.signed_in = registry, relay, permission_timeout, signed_in
         self._waiters: dict[int, asyncio.Future] = {}
         self._pages: dict[str, str] = {}  # session -> the page its browser last reported (PostToolUse)
         self._snapshots: dict[str, str] = {}  # session -> its latest full page snapshot's text
@@ -223,6 +230,10 @@ class HookBridge:
             self._roots.pop(session_id, None)
         else:
             self._roots[session_id] = Path(workdir)
+
+    def page_of(self, session_id):
+        """The page this session's browser last reported (note_page), or None."""
+        return self._pages.get(session_id)
 
     def resolve(self, qid, decision):
         fut = self._waiters.get(qid)
@@ -335,6 +346,14 @@ class HookBridge:
             return {}
         if not sid:  # no session to ask in
             return pre_tool_response(None)
+        # Inside a button or link: that one's name ("Cancel subscription", not its icon's). No node: none.
+        target = found[0][-1] if found else None
+        name = (target[1] or target[2]) if target else ""
+        # Only a cancellation may still be asked on a signed-in site: one target, by its real name, never a dialog.
+        cancels = len(found) == 1 and not dialog and names_a_cancellation(name)
+        if self.signed_in and not cancels and await self.signed_in(page):
+            logger.info(f"hook PreToolUse: a paying step on a signed-in site, refused ({sid[:8]})")
+            return pre_tool_response(None, SIGNED_IN_NO_PAY)
         logger.info(f"hook PreToolUse: a purchase-like step ({sid[:8]})")
         self.reg.upsert_session(sid, cwd=p.get("cwd"))
         self.reg.add_event(sid, "PreToolUse", p)
@@ -342,9 +361,6 @@ class HookBridge:
         # The real target's name, the page's own when the snapshot knows it, for relay: only a target that cancels
         # or stops lets "yes, cancel it" approve (confirm.names_a_cancellation). Never sent back to Claude.
         # No node: "" (no cancel question), never the agent's own `element`.
-        # Inside a button or link: that one's name ("Cancel subscription", not its icon's).
-        target = found[0][-1] if found else None
-        name = (target[1] or target[2]) if target else ""
         return pre_tool_response(await self.ask(sid, "permission", describe(p.get("tool_name"), inp, page, real),
                                                 p.get("tool_name"), {**inp, "_target_name": name}))
 

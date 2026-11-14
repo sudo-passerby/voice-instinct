@@ -496,7 +496,7 @@ def test_read_access_lets_file_tools_read_but_nothing_write():
     assert s["permissions"]["additionalDirectories"] == [str(TRIP)]
     assert "Edit(~/Documents/trip/**)" in s["permissions"]["deny"]  # Edit rules cover Write too (docs)
     assert "~/Documents/trip" in s["sandbox"]["filesystem"]["denyWrite"]
-    assert "allowWrite" not in s["sandbox"]["filesystem"] and s["permissions"]["allow"] == []
+    assert "allowWrite" not in s["sandbox"]["filesystem"] and s["permissions"]["allow"] == ["mcp__vault__sign_in"]
 
 
 def test_write_access_lets_it_change_files_but_never_delete_or_move_them():

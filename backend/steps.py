@@ -111,8 +111,8 @@ class StepRecorder:
 
 
 class _Run:
-    def __init__(self, rec, browser):
-        self.rec, self.browser = rec, browser
+    def __init__(self, rec, browser, owned=True):
+        self.rec, self.browser, self.owned = rec, browser, owned
 
 
 class StepHub:
@@ -122,24 +122,25 @@ class StepHub:
         self.home, self.telegram, self._launch, self._shoot = Path(home), telegram, launch, shoot
         self._runs, self._sending, self._lock = {}, set(), asyncio.Lock()
 
-    async def start(self, session_id, cwd):
-        """Open the run's record and its own browser. Returns the --mcp-config JSON, or None to run the
-        errand with the normal browser (and no capture). Never raises: debug mode must not fail an errand."""
+    async def start(self, session_id, cwd, browser=None):
+        """Open the run's record and its own browser, or capture the one given (the vault's, closed by its owner).
+        Returns the --mcp-config JSON, or None to run the errand with the normal browser (and no capture). Never
+        raises: debug mode must not fail an errand."""
         try:
             rec = StepRecorder(cwd)
         except OSError as e:
             logger.warning(f"debug capture off: cannot create the record ({type(e).__name__})")
             return None
-        browser = None
+        owned = browser is None
         exe = headless_shell(self.home)
-        if exe is None or browser_mcp(self.home) is None:
+        if browser is None and (exe is None or browser_mcp(self.home) is None):
             rec.note("Debug capture off: the errand browser is not installed.")
-        else:
+        elif browser is None:
             try:
                 browser = await self._launch(exe)
             except Exception as e:
                 rec.note(f"Debug capture off: {e}")
-        self._runs[session_id] = _Run(rec, browser)
+        self._runs[session_id] = _Run(rec, browser, owned)
         return json.dumps(browser_mcp(self.home, cdp_endpoint=browser.endpoint)) if browser else None
 
     async def on_step(self, p):
@@ -166,7 +167,7 @@ class StepHub:
         run = self._runs.pop(session_id, None)
         if run is None:
             return
-        if run.browser:
+        if run.browser and run.owned:
             await run.browser.close()
         report = run.rec.finish(outcome)
         if self.telegram:

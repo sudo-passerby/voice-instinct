@@ -291,7 +291,7 @@ class FakeSteps:
     def __init__(self, mcp='{"cdp": 1}'):
         self.mcp, self.calls = mcp, []
 
-    async def start(self, sid, cwd):
+    async def start(self, sid, cwd, browser=None):
         self.calls.append(("start", sid, cwd))
         return self.mcp
 
@@ -509,3 +509,47 @@ import pytest as _pytest
 def test_card_details_in_any_separator_are_refused_and_labelled_references_are_not(text, refused):
     from delegate import payment_details
     assert payment_details(text) is refused
+
+
+class FakeVault:
+    def __init__(self, browser=True):
+        self.browser, self.calls = browser, []
+
+    async def open(self, sid):
+        self.calls.append(("open", sid))
+        if not self.browser:
+            return None
+
+        class B:
+            endpoint = "http://127.0.0.1:9222"
+        return B()
+
+    async def close(self, sid):
+        self.calls.append(("close", sid))
+
+
+def test_an_errand_runs_in_the_vaults_signed_in_browser_with_sign_in_and_cleans_up(tmp_path, monkeypatch):
+    monkeypatch.setattr("delegate.browser_mcp", lambda home, cdp_endpoint=None: {"mcpServers": {"browser": cdp_endpoint}})
+    b, vault, files = FakeBackend([BackendResult("ok", "x")]), FakeVault(), []
+
+    def vault_mcp(mcp, sid):
+        f = tmp_path / f"{sid}.mcp.json"
+        f.write_text(mcp)
+        files.append((f, mcp))
+        return str(f)
+
+    (delegate,) = make_tools(b, Registry(), lambda sid, **kw: f"/settings/{sid}.json", vault=vault, vault_mcp=vault_mcp)
+    run(delegate(make_params()[0], "check my amazon orders"))
+    call = b.calls[0]
+    (f, mcp), = files
+    assert call["mcp_config"] == str(f) and '"http://127.0.0.1:9222"' in mcp
+    assert vault.calls == [("open", call["sid"]), ("close", call["sid"])]
+    assert not f.exists()  # it holds the hook token
+
+
+def test_without_the_vaults_browser_an_errand_keeps_the_normal_one():
+    b, vault = FakeBackend([BackendResult("ok", "x")]), FakeVault(browser=False)
+    (delegate,) = make_tools(b, Registry(), lambda sid, **kw: f"/settings/{sid}.json", vault=vault,
+                             vault_mcp=lambda mcp, sid: pytest.fail("no vault tool without its browser"))
+    run(delegate(make_params()[0], "find flights"))
+    assert b.calls[0]["mcp_config"] is None

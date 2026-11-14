@@ -21,7 +21,7 @@ from claude_cli import ClaudeCodeBackend
 from clock import current_time
 from config import REPO_ROOT, load
 from confirm import name_words
-from debugbrowser import launch as launch_debug_browser
+from debugbrowser import headless_shell, launch as launch_debug_browser
 from delegate import errand_lock, make_tools
 from folders import Folders, make_folder_tools
 from gui import make_gui_router
@@ -50,6 +50,7 @@ from relay import Relay, make_bridge_tools, start_session
 from services import build_llm, make_stt, make_tts
 from shutdown import cancel_on_exit
 from steps import StepHub
+from vault import Vault, make_router as make_vault_router, with_vault
 from telegram import Telegram
 from memory import PROMPT as MEMORY_PROMPT, Memory, make_memory_tools
 from wake import handle_client_message, make_dismiss, make_wake
@@ -72,8 +73,11 @@ sessions = set()  # open sessions' runners, cancelled when the server is stopped
 relay = Relay(registry)
 MEMORY = Memory(DATA / "memory")  # profile, notes and memory files (#25, #26); off if unusable
 MEMORY.ensure()
-bridge = HookBridge(registry, relay, cfg.permission_timeout)
 HOOK_TOKEN = load_token(DATA / "hook-token")
+# The vault (vault.py): saved logins, filled in by the backend in a browser that stays signed in.
+VAULT = Vault(DATA, None, partial(launch_debug_browser, hide_env=(cfg.api_key_env,)), headless_shell(Path.home()))
+bridge = HookBridge(registry, relay, cfg.permission_timeout, signed_in=VAULT.signed_in)
+VAULT.bridge = bridge
 # Debug mode (config [debug] browser_steps): every errand browser step screenshotted (steps.py).
 TELEGRAM = Telegram.from_env()  # None until TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are set
 STEPS = (StepHub(Path.home(), telegram=TELEGRAM, launch=partial(launch_debug_browser, hide_env=(cfg.api_key_env,)))
@@ -94,6 +98,7 @@ app.router.lifespan_context = _with_reminders
 # its FastAPI app, so hooks share the voice page's process, event loop and port.
 BUDGET = TimeBudget(min_notice=cfg.permission_timeout + 30)  # errands are told when nearly out of time
 app.include_router(make_router(bridge, HOOK_TOKEN, steps=STEPS, budget=BUDGET))
+app.include_router(make_vault_router(VAULT, HOOK_TOKEN))
 app.include_router(make_gui_router(cfg))
 refuse_other_origins(app, port=7860)  # no other web page may open a voice session (guard.py)
 logging.getLogger("uvicorn.access").addFilter(hide_hook_tokens)  # the token is in the URL
@@ -112,8 +117,10 @@ SYSTEM_PROMPT = (
     "For any errand that needs the web or an account, call delegate(task) and say one short line "
     "like 'on it' first. Errands never pay: an errand stops at the payment step and reports the page link, "
     "what it chose and the total. Then tell the user it's ready for them to finish and pay themselves, say "
-    "the total, and offer to send the link to their Telegram with send_telegram. Its browser is a fresh "
-    "profile, so their own browser won't have the cart: send the product or page link and the choices made. "
+    "the total, and offer to send the link to their Telegram with send_telegram. Its browser isn't "
+    "their own browser, so it won't have the cart: send the product or page link and the choices made. "
+    "An errand can sign in to a site with the user's saved login (they're asked first); if it reports there is "
+    "none, tell the user to add it from a terminal with the command it gives, and never ask for a password. "
     "Never take card or UPI details, a PIN or an OTP, and never put them in a task. Never book a free "
     "reservation, cancel, or change an account without the user's explicit go-ahead in this conversation; "
     "the errand asks them before such a step. "
@@ -203,7 +210,8 @@ async def bot(runner_args: RunnerArguments):
         # Tools declare their own options with @tool_options; the context's tools (make_context) are the registration.
         tools += [*make_tools(backend, registry, _run_settings, on_finish=bridge.expire_session,
                              workspace_root=Path(cfg.workspace_dir).expanduser(), steps=STEPS, budget=BUDGET,
-                             memory=MEMORY, lock=ERRANDS, bridge=bridge, folders=FOLDERS),
+                             memory=MEMORY, lock=ERRANDS, bridge=bridge, folders=FOLDERS, vault=VAULT,
+                             vault_mcp=lambda mcp, sid: with_vault(mcp, sid, HOOK_PORT, HOOK_TOKEN, DATA / "runs")),
                  *make_bridge_tools(bridge, relay, registry, backend, names=name_words(cfg.wake_phrases)),
                  *make_folder_tools(FOLDERS, bridge, registry, Path.home())]
     else:
