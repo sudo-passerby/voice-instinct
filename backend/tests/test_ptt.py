@@ -126,3 +126,40 @@ def test_hiding_the_orb_ends_push_to_talk():
 def test_a_press_never_followed_by_another_turns_itself_off():
     users, ptt = asyncio.run(converse([SleepFrame(sleep=0.6)], presses=[(0.05, None)], quiet=0.3))
     assert ptt.state == "idle"
+
+
+class Said(Numbered):
+    """Every segment is heard as the same sentence."""
+
+    def __init__(self, text):
+        super().__init__()
+        self.text = text
+
+    def create_stream(self):
+        rec = self
+
+        class S:
+            def accept_waveform(self, sample_rate, samples):
+                self.result = type("R", (), {"text": rec.text})()
+        return S()
+
+
+def test_hey_nova_still_works_without_ever_pressing_the_key():
+    # Push-to-talk is an extra way in: with the key unused, the wake phrase opens the turn and Smart Turn ends it.
+    ctx, sent = LLMContext(), []
+
+    async def send(msg):
+        sent.append(msg)
+
+    async def go():
+        stt = ParakeetSTTService(recognizer=Said("Hey Nova, what's the time?"))
+        stt.PAUSE_SECS = 0.2
+        wake = make_wake(["hey nova"], 10, send, hold=lambda: ptt.active)
+        ptt = PushToTalk(wake, stt)
+        user, _ = LLMContextAggregatorPair(ctx, user_params=LLMUserAggregatorParams(
+            user_turn_strategies=UserTurnStrategies(start=[wake, *default_user_turn_start_strategies()],
+                                                    stop=[PushToTalkStop(ptt)])))
+        await run_test(Pipeline([stt, user]), frames_to_send=[*talk(), *audio(SILENCE, 10), SleepFrame(sleep=2.0)])
+    asyncio.run(go())
+    assert [m["content"] for m in ctx.get_messages() if m["role"] == "user"] == ["Hey Nova, what's the time?"]
+    assert sent[0] == {"type": "wake", "reason": "phrase"}
