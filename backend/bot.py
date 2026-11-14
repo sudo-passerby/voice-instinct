@@ -53,6 +53,7 @@ from steps import StepHub
 from vault import Vault, make_router as make_vault_router, with_vault
 from telegram import Telegram
 from memory import PROMPT as MEMORY_PROMPT, Memory, make_memory_tools
+from ptt import PushToTalk, PushToTalkStop
 from wake import handle_client_message, make_dismiss, make_wake
 
 load_dotenv(REPO_ROOT / ".env")
@@ -203,8 +204,9 @@ async def bot(runner_args: RunnerArguments):
 
     errands = ErrandFeed(registry, send_gui)  # the orb shows running errands and a waiting question (gui.py)
     wake = make_wake(cfg.wake_phrases, cfg.awake_timeout, send_gui,
-                     hold=lambda: relay.holds_awake)  # the window restarts when Nova finishes speaking
+                     hold=lambda: relay.holds_awake or ptt.active)  # the window restarts when Nova finishes speaking
     stt = make_stt(cfg)
+    ptt = PushToTalk(wake, stt, lambda frames: holder["worker"].queue_frames(frames))  # `voice-instinct talk`
 
     tools = [make_dismiss(wake), current_time, *make_reminder_tools(registry, TELEGRAM),
              # forget also scrubs the conversation restored at every connect (context is set below, before any call)
@@ -233,7 +235,9 @@ async def bot(runner_args: RunnerArguments):
         user_params=LLMUserAggregatorParams(
             vad_analyzer=SileroVADAnalyzer(),
             # Documented: a wake phrase gates every turn; the defaults follow it.
-            user_turn_strategies=UserTurnStrategies(start=[wake, *default_user_turn_start_strategies()]),
+            # The stop is the default Smart Turn v3, paused while push-to-talk holds the turn open (ptt.py).
+            user_turn_strategies=UserTurnStrategies(start=[wake, *default_user_turn_start_strategies()],
+                                                    stop=[PushToTalkStop(ptt)]),
         ),
         assistant_params=ASSISTANT_PARAMS,  # older turns are summarized, so it stays bounded
     )
@@ -297,6 +301,8 @@ async def bot(runner_args: RunnerArguments):
 
     @worker.rtvi.event_handler("on_client_message")
     async def on_client_message(rtvi, msg):
+        if msg.type == "talk":
+            await ptt.press()
         handle_client_message(wake, msg)  # documented RTVI client message, sent when the orb is shown
 
     # Documented (Pipeline events): an error reaching the worker. A failed model call is otherwise

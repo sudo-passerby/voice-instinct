@@ -283,9 +283,11 @@ EOF
   write "$LAUNCHER" 755 <<EOF
 #!/usr/bin/env bash
 # voice-instinct launcher: "voice-instinct" starts the orb, "voice-instinct toggle" shows or hides it,
+# "voice-instinct talk" is push-to-talk (press to start talking, press again to send),
 # "voice-instinct quit" quits it (for desktops without a tray).
 args=()
 [ "\${1:-}" = toggle ] && args=(--toggle)
+[ "\${1:-}" = talk ] && args=(--talk)
 [ "\${1:-}" = quit ] && args=(--quit)
 # The real binary: node_modules/.bin/electron is a node script, and many desktops have no system node.
 exec "$REPO/frontend/node_modules/electron/dist/electron" "$REPO/frontend" "\${args[@]}"

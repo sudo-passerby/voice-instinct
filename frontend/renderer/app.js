@@ -85,6 +85,8 @@ window.vi.onToggle(() => {
   if (state.mode === "offline") setTimeout(() => { if (state.mode === "offline") dispatch("sleep"); }, 4000); // tray says why
   if (state.connected) client.sendClientMessage(state.visible ? "wake" : "sleep"); // by hand: listen, or stop
 });
+// Push-to-talk: the backend opens the turn on the first press (and wakes, which shows the orb) and ends it on the second.
+window.vi.onTalk(() => { if (state.connected && !muted) client.sendClientMessage("talk"); });
 window.vi.onMute((m) => {
   muted = m;
   render(); // a muted orb must not look like it listens

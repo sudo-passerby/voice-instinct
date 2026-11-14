@@ -103,6 +103,7 @@ function createWindow() {
 
 app.on("second-instance", (_event, argv) => {
   if (argv.includes("--toggle")) toggle();
+  if (argv.includes("--talk") && win && loaded) win.webContents.send("talk"); // push-to-talk (backend/ptt.py)
   if (argv.includes("--quit")) app.quit();
 });
 

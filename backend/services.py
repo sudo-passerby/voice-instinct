@@ -15,7 +15,8 @@ from pathlib import Path
 import numpy as np
 from loguru import logger
 
-from pipecat.frames.frames import Frame, InterimTranscriptionFrame, TranscriptionFrame, UserStoppedSpeakingFrame
+from pipecat.frames.frames import (Frame, InterimTranscriptionFrame, ProposedUserStoppedSpeakingFrame, TranscriptionFrame,
+                                   UserStoppedSpeakingFrame)
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.google.llm import GoogleLLMService
 from pipecat.services.kokoro.tts import KokoroTTSService
@@ -136,6 +137,8 @@ class ParakeetSTTService(SegmentedSTTService):
         self._rec = recognizer or _load_recognizer(model_dir)
         self._cut = None
         self._in_segment, self._segment_bytes = False, 0  # a segment under way, and its audio so far
+        self._ended = self._decoded = 0  # segments handed to the base class, and transcribed (in order)
+        self._stop_after = None  # push-to-talk: propose the turn's end once this many are transcribed
         self._clean = clean or (lambda text: text)  # str -> str on every decoded text (Whisper's filter)
 
     def can_generate_metrics(self) -> bool:
@@ -155,6 +158,8 @@ class ParakeetSTTService(SegmentedSTTService):
         await super()._handle_user_started_speaking(frame)
 
     async def _handle_user_stopped_speaking(self, frame):
+        if not self._in_segment:
+            return  # push-to-talk already ended this segment (end_turn)
         await self._cancel_cut()
         self._cut = self.create_task(self._cut_after_pause(frame))
 
@@ -165,12 +170,24 @@ class ParakeetSTTService(SegmentedSTTService):
 
     async def _end_segment(self, frame):
         self._in_segment, self._segment_bytes = False, 0
+        self._ended += 1
         await SegmentedSTTService._handle_user_stopped_speaking(self, frame)
 
     async def _cancel_cut(self):
         if self._cut is not None:
             await self.cancel_task(self._cut)
             self._cut = None
+
+    async def end_turn(self):
+        """Push-to-talk's second press (ptt.py): transcribe what is buffered now, without waiting for the
+        pause, and propose the end of the user's turn right after that transcript."""
+        if self._in_segment:
+            await self._cancel_cut()
+            await self._end_segment(None)  # the base class never reads the frame
+        if self._decoded >= self._ended:
+            await self.push_frame(ProposedUserStoppedSpeakingFrame())
+        else:
+            self._stop_after = self._ended
 
     # A TV with gaps under PAUSE_SECS would make one ever-growing segment (4 min: 3.7 GB, and no wake
     # until it ended), so a segment is cut at this length whatever, like Nemotron's rule 3. Counted here,
@@ -205,11 +222,15 @@ class ParakeetSTTService(SegmentedSTTService):
         return self._clean(stream.result.text.strip())
 
     async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame, None]:
+        self._decoded += 1
         await self.start_processing_metrics()
         text = await asyncio.to_thread(self._decode, audio)
         await self.stop_processing_metrics()
         if text:  # never logged: until the wake phrase this is whatever the room is saying
             yield TranscriptionFrame(text, self._user_id, time_now_iso8601())
+        if self._stop_after is not None and self._decoded >= self._stop_after:
+            self._stop_after = None
+            yield ProposedUserStoppedSpeakingFrame()  # after the transcript, so the turn ends with it
 
 
 class NemotronSTTService(STTService):
