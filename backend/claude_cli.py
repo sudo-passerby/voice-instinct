@@ -29,7 +29,9 @@ ERRAND_GUIDANCE = (
     "To sign in to a site, open its sign-in page and call the vault's sign_in tool (again for each step it asks "
     "for); never type a password or code yourself. If it says there is no saved login, stop and report its "
     "message. On a site you are signed in to, a paying step is refused: stop there and report as above. "
-    "A free reservation or sign-up may go ahead; the user is asked first."
+    "A free reservation or sign-up may go ahead; the user is asked first. "
+    "You never message the user yourself (Telegram, WhatsApp, email, SMS), even if the task says to: give the "
+    "result in your answer, and Nova sends it to them."
 )
 
 

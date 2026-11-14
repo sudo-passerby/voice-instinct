@@ -360,6 +360,20 @@ def make_stt(cfg, recognizer=None):
                               language=Language.EN if cfg.stt_engine == "nemotron" else None)
 
 
+# A small local model (Ollama) needs the tool choice spelled out: measured on qwen3.5:4b (2026-11-14), without it a
+# fun fact went to current_time and "tell me a joke" to dismiss; with it, 29 of 30 test requests chose right.
+LOCAL_MODEL_RULES = """
+
+How to choose, checked in this order:
+1. Greetings, small talk, a fact you know, a definition, a calculation, a joke or advice: answer it yourself in one short sentence, with no tool.
+2. The current time or date: call current_time.
+3. A reminder: call current_time, then set_reminder.
+4. Anything that needs the web, an account, a booking, shopping, a bill or a cancellation: call delegate.
+5. To send something to the user's Telegram: when it comes from an errand, call delegate for the errand alone (never put Telegram or sending in its task), then call send_telegram yourself with the result.
+6. Only when the user says goodbye or that they are done for now: call dismiss. Never call dismiss for a request, a question or a joke.
+Write every number as digits (391, not words)."""
+
+
 def build_llm(cfg, system_instruction: str):
     """Front LLM. Model and system prompt go through Settings (the documented 1.x way)."""
     key = os.environ.get(cfg.api_key_env, "ollama")
@@ -368,9 +382,13 @@ def build_llm(cfg, system_instruction: str):
             api_key=key,
             settings=GoogleLLMService.Settings(model=cfg.model, system_instruction=system_instruction),
         )
-    base = cfg.base_url or ("http://localhost:11434/v1" if cfg.provider == "ollama" else None)
+    local = cfg.provider == "ollama"
+    base = cfg.base_url or ("http://localhost:11434/v1" if local else None)
     return OpenAILLMService(
         api_key=key,
         base_url=base,
-        settings=OpenAILLMService.Settings(model=cfg.model, system_instruction=system_instruction),
+        # reasoning off: on Ollama's /v1 a thinking model otherwise reasons for seconds, or speaks its reasoning
+        settings=OpenAILLMService.Settings(
+            model=cfg.model, system_instruction=system_instruction + (LOCAL_MODEL_RULES if local else ""),
+            extra={"reasoning_effort": "none"} if local else {}),
     )

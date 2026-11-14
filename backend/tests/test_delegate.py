@@ -285,6 +285,8 @@ def test_the_result_is_spoken_as_a_short_summary_not_read_out():
     run(delegate(p, "flights"))
     note = out[-1]["note"]
     assert "two short sentences" in note and "offer" in note and "table" in note
+    # Asked for on Telegram, Nova sends it itself: an errand once tried Telegram's website instead (2026-11-14).
+    assert "send_telegram now" in note
 
 
 class FakeSteps:

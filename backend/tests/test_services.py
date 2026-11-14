@@ -47,7 +47,24 @@ def test_ollama_and_openai_compatible_get_the_same_settings(monkeypatch):
     monkeypatch.delenv("NO_SUCH_KEY", raising=False)
     cfg = Config(provider="ollama", model="qwen3:8b", api_key_env="NO_SUCH_KEY")
     llm = build_llm(cfg, "BE BRIEF")
-    assert llm._settings.model == "qwen3:8b" and llm._settings.system_instruction == "BE BRIEF"
+    assert llm._settings.model == "qwen3:8b" and llm._settings.system_instruction.startswith("BE BRIEF")
+
+
+def test_a_local_model_gets_the_tool_rules_and_never_thinks_aloud(monkeypatch):
+    # A small local model called the clock for a fun fact and ended the conversation for a joke (2026-11-14), and
+    # with reasoning on it took 13 s; with Ollama's /v1 left to default it spoke its reasoning.
+    llm = build_llm(Config(provider="ollama", model="qwen3.5:4b", api_key_env="NO_SUCH_KEY"), "BE BRIEF")
+    rules = llm._settings.system_instruction
+    assert rules.startswith("BE BRIEF") and "Never call dismiss for a request" in rules and "digits" in rules
+    assert "never put Telegram or sending in its task" in rules  # an errand once tried Telegram's website
+    assert llm._settings.extra["reasoning_effort"] == "none"
+
+
+def test_gemini_and_openai_keep_their_prompt_as_given(monkeypatch):
+    monkeypatch.setenv("TEST_KEY", "k")
+    for provider in ("gemini", "openai"):
+        llm = build_llm(Config(provider=provider, model="m", api_key_env="TEST_KEY"), "BE BRIEF")
+        assert llm._settings.system_instruction == "BE BRIEF" and not llm._settings.extra
 
 
 from pathlib import Path
