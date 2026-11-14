@@ -206,7 +206,7 @@ async def bot(runner_args: RunnerArguments):
     wake = make_wake(cfg.wake_phrases, cfg.awake_timeout, send_gui,
                      hold=lambda: relay.holds_awake or ptt.active, manual=lambda: ptt.manual)  # the window restarts when Nova finishes speaking
     stt = make_stt(cfg)
-    ptt = PushToTalk(wake, stt)  # `voice-instinct talk`
+    ptt = PushToTalk(wake, stt, lambda frame: holder["worker"].queue_frame(frame))  # `voice-instinct talk`
 
     tools = [make_dismiss(wake), current_time, *make_reminder_tools(registry, TELEGRAM),
              # forget also scrubs the conversation restored at every connect (context is set below, before any call)

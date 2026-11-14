@@ -1,5 +1,6 @@
-"""Push-to-talk (`voice-instinct talk`, e.g. on Win+P): the first press wakes Nova and the turn stays open
-through any pause; the second press ends it. In between, Smart Turn's silence check is paused.
+"""Push-to-talk (`voice-instinct talk`, e.g. on Win+P): the first press wakes Nova and opens the turn
+(interrupting Nova if it is answering), the turn stays open through any pause, and the second press ends
+it. In between, Smart Turn's silence check is paused.
 
 The second press asks the STT for the end (`end_turn` in services.py): it transcribes what is still
 buffered and only then proposes the stop, so the last words are in the turn. The stop strategy below
@@ -9,7 +10,7 @@ resolves that documented ProposedUserStoppedSpeakingFrame.
 import time
 
 from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
-from pipecat.frames.frames import (ProposedUserStoppedSpeakingFrame, StartFrame, STTMetadataFrame,
+from pipecat.frames.frames import (ProposedUserStartedSpeakingFrame, ProposedUserStoppedSpeakingFrame, StartFrame, STTMetadataFrame,
                                    TranscriptionFrame, VADUserStartedSpeakingFrame, VADUserStoppedSpeakingFrame)
 from pipecat.turns.user_stop import TurnAnalyzerUserTurnStopStrategy
 
@@ -19,9 +20,9 @@ class PushToTalk:
     # wake phrase forever: this long without speech, it turns itself off.
     QUIET_SECS = 60.0
 
-    def __init__(self, wake, stt):
+    def __init__(self, wake, stt, queue):
         self._state = "idle"  # idle, talking, ending (the second press, until the stop goes through)
-        self._wake, self._stt = wake, stt
+        self._wake, self._stt, self._queue = wake, stt, queue  # queue: async (frame) into the pipeline
         self._heard = 0.0
         self._manual = False  # after a push-to-talk turn, until Nova sleeps or hears its name (wake.py)
         # Hiding the orb or saying bye puts Nova to sleep (wake.sleep, past the hold): push-to-talk ends too.
@@ -62,6 +63,9 @@ class PushToTalk:
             self._state = "talking"
             self.heard()
             self._wake.wake("talk")
+            # The press opens the turn at once: the awake wake strategy resolves this documented proposal
+            # into a turn start, which interrupts Nova if it is still answering.
+            await self._queue(ProposedUserStartedSpeakingFrame())
         elif self.state == "talking":
             self._state = "ending"
             await self._stt.end_turn()

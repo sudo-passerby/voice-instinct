@@ -56,7 +56,7 @@ async def converse(frames, presses, decode_secs=0.0, quiet=None, rec=None):
     stt = ParakeetSTTService(recognizer=rec or Numbered(decode_secs))
     stt.PAUSE_SECS = 0.2
     wake = make_wake(["hey nova"], 10, send, hold=lambda: ptt.active, manual=lambda: ptt.manual)  # as in bot.py
-    ptt = PushToTalk(wake, stt)
+    ptt = PushToTalk(wake, stt, stt.queue_frame)
     if quiet:
         ptt.QUIET_SECS = quiet
     user, _ = LLMContextAggregatorPair(ctx, user_params=LLMUserAggregatorParams(
@@ -74,8 +74,8 @@ async def converse(frames, presses, decode_secs=0.0, quiet=None, rec=None):
             await asyncio.sleep(t)
             await (act(wake, ptt) if act else ptt.press())
     asyncio.get_running_loop().create_task(press_at())
-    await run_test(Pipeline([stt, user]), frames_to_send=[SleepFrame(sleep=0.1), *frames])
-    converse.stops = stops
+    down, _ = await run_test(Pipeline([stt, user]), frames_to_send=[SleepFrame(sleep=0.1), *frames])
+    converse.stops, converse.down = stops, down
     return [m["content"] for m in ctx.get_messages() if m["role"] == "user"], ptt
 
 
@@ -155,7 +155,7 @@ def test_hey_nova_still_works_without_ever_pressing_the_key():
         stt = ParakeetSTTService(recognizer=Said("Hey Nova, what's the time?"))
         stt.PAUSE_SECS = 0.2
         wake = make_wake(["hey nova"], 10, send, hold=lambda: ptt.active)
-        ptt = PushToTalk(wake, stt)
+        ptt = PushToTalk(wake, stt, stt.queue_frame)
         user, _ = LLMContextAggregatorPair(ctx, user_params=LLMUserAggregatorParams(
             user_turn_strategies=UserTurnStrategies(start=[wake, *default_user_turn_start_strategies()],
                                                     stop=[PushToTalkStop(ptt)])))
@@ -210,3 +210,11 @@ def test_once_nova_sleeps_after_push_to_talk_its_usual_wakes_work_again():
     frames = [*talk(), *gap(0.6), *talk(), *gap(1.5)]
     users, ptt = asyncio.run(converse(frames, presses=[(0.05, None), (0.5, None), (0.2, sleep_then_reply)], rec=rec))
     assert users == ["book a table", "yes please"] and not ptt.manual
+
+
+def test_a_press_while_nova_answers_interrupts_it_at_once():
+    # Nothing said yet: the press alone opens the turn, which interrupts the answer (Pipecat broadcasts it).
+    from pipecat.frames.frames import InterruptionFrame
+    asyncio.run(converse([SleepFrame(sleep=0.4)], presses=[(0.05, None)]))
+    assert any(isinstance(f, InterruptionFrame) for f in converse.down)
+    assert converse.stops == []  # and the turn stays open until the second press
